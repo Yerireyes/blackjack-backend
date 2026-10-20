@@ -16,17 +16,127 @@ es opcional y reutiliza el mismo crate. Diseño completo en
 | `.sqlx/` | Metadatos de las consultas SQL para compilar sin base de datos |
 | `scripts/` | Build WASM, contrato, prueba de humo, PostgreSQL local |
 
-## Requisitos (Windows, ya instalados en esta máquina)
+## Instalación en una computadora nueva (Windows)
 
-- Rust estable, toolchain `x86_64-pc-windows-gnu` + target `wasm32-unknown-unknown`.
-- MinGW-w64 (WinLibs) en el `PATH` (`dlltool`/`gcc` para el toolchain GNU).
-- `wasm-pack` (necesita el Visual C++ Redistributable x64).
-- `sqlx-cli` (`cargo install sqlx-cli --no-default-features --features postgres,rustls`).
-- PostgreSQL 18 portable en `%LOCALAPPDATA%\Programs\PostgreSQL18` (sin servicio de
-  Windows: hay que arrancarlo con `npm run db:start` después de reiniciar el equipo).
-- Node 18+ para los scripts.
+Clona este repo y el del front uno al lado del otro: los scripts esperan el front en
+`../Frontend` (contrato TS y dependencia `file:../Backend/engine-wasm/pkg`).
 
-Configuración en `.env` (no se versiona; plantilla en [.env.example](.env.example)).
+```text
+Blackjack/
+├── Backend/    ← este repo
+└── Frontend/
+```
+
+Después de instalar cada herramienta, **abre una terminal nueva** para que tome el `PATH`.
+No hace falta `npm install`: los scripts de Node no tienen dependencias.
+
+### 1. Node y Visual C++ Redistributable
+
+- **Node 18+**: `winget install OpenJS.NodeJS.LTS`
+- **Visual C++ Redistributable x64** (lo necesita `wasm-pack`):
+  `winget install Microsoft.VCRedist.2015+.x64`
+
+### 2. Rust
+
+Hay dos opciones. La **A** es la que se usó en la máquina original y no pide permisos de
+administrador.
+
+**A. Toolchain GNU + MinGW (sin admin)**
+
+1. Descarga `rustup-init.exe` de <https://rustup.rs> y ejecútalo así:
+
+   ```powershell
+   .\rustup-init.exe -y --default-host x86_64-pc-windows-gnu --profile minimal -c clippy -c rustfmt -t wasm32-unknown-unknown
+   ```
+
+2. Descarga MinGW-w64 de WinLibs (<https://github.com/brechtsanders/winlibs_mingw/releases>,
+   archivo `winlibs-x86_64-posix-seh-gcc-*-mingw-w64ucrt-*.zip`), descomprímelo en
+   `%LOCALAPPDATA%\Programs\winlibs` y agrega al `PATH` de usuario
+   `%LOCALAPPDATA%\Programs\winlibs\mingw64\bin`. Sin esto algunas dependencias fallan
+   con `error calling dlltool 'dlltool.exe': program not found`.
+
+**B. Toolchain MSVC (pide admin)**
+
+1. Instala Visual Studio Build Tools con la carga de trabajo "Desarrollo para el
+   escritorio con C++".
+2. Instala Rust desde <https://rustup.rs> con las opciones por defecto.
+3. Ejecuta `rustup target add wasm32-unknown-unknown`.
+
+Con esta opción no hace falta MinGW.
+
+### 3. wasm-pack y sqlx-cli
+
+- **wasm-pack**: descarga `wasm-pack-v*-x86_64-pc-windows-msvc.tar.gz` de
+  <https://github.com/rustwasm/wasm-pack/releases> y copia `wasm-pack.exe` a
+  `%USERPROFILE%\.cargo\bin`. El paquete de npm no funcionó en Windows.
+- **sqlx-cli**:
+
+  ```sh
+  cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+  ```
+
+Para comprobar todo: `rustc --version`, `wasm-pack --version`, `sqlx --version`,
+`node --version`.
+
+### 4. PostgreSQL 18
+
+**Opción portable (sin admin; es la que usan `npm run db:*`)**
+
+1. Descarga el zip de binarios de Windows x64 desde
+   <https://www.enterprisedb.com/download-postgresql-binaries>.
+2. Descomprímelo de forma que exista
+   `%LOCALAPPDATA%\Programs\PostgreSQL18\pgsql\bin\postgres.exe`.
+3. Crea el clúster y arráncalo. `initdb` pide la contraseña del superusuario `postgres`:
+
+   ```powershell
+   $pg = "$env:LOCALAPPDATA\Programs\PostgreSQL18"
+   & "$pg\pgsql\bin\initdb.exe" -D "$pg\data" -U postgres -W -E UTF8 --locale=C -A scram-sha-256
+   npm run db:start
+   ```
+
+No queda como servicio de Windows: después de cada reinicio hay que ejecutar
+`npm run db:start`.
+
+**Opción con instalador** (<https://www.postgresql.org/download/windows/>): queda como
+servicio y arranca solo. En ese caso no uses `npm run db:*`.
+
+### 5. Base de datos y `.env`
+
+Crea el usuario y la base. Usa una contraseña solo con letras y números, porque va
+dentro de una URL. `CREATEDB` lo necesitan los tests de la API, que crean una base
+temporal por test.
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\PostgreSQL18\pgsql\bin\psql.exe" -h localhost -U postgres `
+  -c "CREATE ROLE blackjack LOGIN CREATEDB PASSWORD 'TU_CONTRASENA';" `
+  -c "CREATE DATABASE blackjack OWNER blackjack;"
+```
+
+Si instalaste PostgreSQL con el instalador, `psql.exe` está en
+`C:\Program Files\PostgreSQL\18\bin`.
+
+Copia [.env.example](.env.example) a `.env` (que no se versiona) y completa estos dos
+valores:
+
+- `DATABASE_URL=postgres://blackjack:TU_CONTRASENA@localhost:5432/blackjack`
+- `JWT_SECRET=`: una clave aleatoria de 32 caracteres o más. Puedes generarla con:
+
+  ```powershell
+  $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
+  ```
+
+### 6. Primer arranque
+
+```sh
+npm run db:migrate       # crea las tablas (antes de compilar la API: sqlx verifica las consultas contra la base)
+npm test                 # todo debe pasar
+npm run build:wasm       # genera engine-wasm/pkg para el front
+npm run gen:contract     # contract.ts (y lo copia a ../Frontend si ya existe)
+npm run api              # API en http://127.0.0.1:8080/api/v1
+```
+
+Para compilar la API sin la base arrancada (por ejemplo en CI), usa
+`SQLX_OFFLINE=true`. Así se usan los metadatos de `.sqlx/`.
 
 ## Comandos
 
