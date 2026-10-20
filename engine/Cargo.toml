@@ -1,0 +1,27 @@
+[package]
+name = "engine"
+description = "Motor exacto de probabilidades de blackjack (composition-dependent)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Genera las declaraciones TypeScript del contrato (lo activa engine-wasm).
+ts = ["dep:tsify", "dep:wasm-bindgen"]
+
+[dependencies]
+serde.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "analyze"
+harness = false

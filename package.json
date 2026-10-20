@@ -1,0 +1,21 @@
+{
+  "name": "blackjack-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "gen:contract": "node scripts/gen-contract.mjs",
+    "check:contract": "node scripts/gen-contract.mjs --check",
+    "smoke:wasm": "node scripts/smoke-wasm.mjs",
+    "test": "cargo test --workspace",
+    "test:engine": "cargo test -p engine",
+    "bench": "cargo bench -p engine",
+    "verify": "cargo run -p sim --release -- verify",
+    "db:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db.ps1 start",
+    "db:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db.ps1 stop",
+    "db:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db.ps1 status",
+    "db:migrate": "sqlx migrate run --source api/migrations",
+    "sqlx:prepare": "cargo sqlx prepare --workspace",
+    "api": "cargo run -p api --release"
+  }
+}

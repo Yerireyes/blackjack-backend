@@ -1,0 +1,30 @@
+[package]
+name = "api"
+description = "API HTTP opcional: análisis remoto, cuentas, sesiones y estadísticas"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+axum = { version = "0.8.9", features = ["macros"] }
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+tokio = { version = "1.53.3", features = ["full"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["cors", "trace", "timeout", "limit"] }
+tower_governor = { version = "0.8.0", features = ["axum"] }
+governor = "0.10.4"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "time", "json", "migrate", "macros"] }
+argon2 = "0.6.0"
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
+uuid = { version = "1.28.0", features = ["v4", "serde"] }
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+dotenvy = "0.15.7"
+
+[dev-dependencies]
+http-body-util = "0.1.5"

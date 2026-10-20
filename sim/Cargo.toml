@@ -1,0 +1,12 @@
+[package]
+name = "sim"
+description = "Simulador Monte Carlo para verificar el motor (nunca para la UI)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+engine.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+clap.workspace = true

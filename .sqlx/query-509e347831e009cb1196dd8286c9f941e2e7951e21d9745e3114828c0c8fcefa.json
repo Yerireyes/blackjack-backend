@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"hands!\",\n                  count(*) FILTER (WHERE chosen_action = best_action) AS \"optimal!\",\n                  coalesce(sum(ev_best - ev_chosen), 0) AS \"ev_lost!\",\n                  count(*) FILTER (WHERE NOT exact) AS \"approximate!\",\n                  count(*) FILTER (WHERE result = 'win') AS \"wins!\",\n                  count(*) FILTER (WHERE result = 'push') AS \"pushes!\",\n                  count(*) FILTER (WHERE result = 'lose') AS \"losses!\"\n           FROM hands WHERE session_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hands!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "optimal!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "ev_lost!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "approximate!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "wins!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "pushes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "losses!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "509e347831e009cb1196dd8286c9f941e2e7951e21d9745e3114828c0c8fcefa"
+}

@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE game_sessions SET ended_at = coalesce(ended_at, now()) WHERE id = $1\n           RETURNING id, rules, mode, started_at, ended_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "game_sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rules",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "game_sessions",
+            "name": "rules"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "game_sessions",
+            "name": "mode"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "game_sessions",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "game_sessions",
+            "name": "ended_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "a6e7e5e867ca6aa312e93b04660c8952777e4df95a06466d931c98da3df69d66"
+}

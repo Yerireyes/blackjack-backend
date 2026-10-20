@@ -1,0 +1,4 @@
+/target
+/engine-wasm/pkg
+/node_modules
+.env
