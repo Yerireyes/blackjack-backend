@@ -62,6 +62,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Cierra cada hora las rondas abandonadas y las temporadas ranked terminadas.
+    let game_pool = pool.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            every.tick().await;
+            api::routes::play::housekeeping(&game_pool).await;
+        }
+    });
+
     if cfg.google.is_none() {
         tracing::info!(
             "login con Google deshabilitado (faltan GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET)"

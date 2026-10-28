@@ -1,60 +1,60 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, context_id, bet, state AS \"state: Jsonb<Round>\", status\n           FROM rounds WHERE user_id = $1 AND status = 'active'",
+  "query": "SELECT season_id, rank, net, hands, medal FROM season_results\n         WHERE user_id = $1 ORDER BY season_id DESC",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
-        "type_info": "Uuid",
+        "name": "season_id",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rounds",
-            "name": "id"
+            "table": "season_results",
+            "name": "season_id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "context_id",
-        "type_info": "Uuid",
+        "name": "rank",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "rounds",
-            "name": "context_id"
+            "table": "season_results",
+            "name": "rank"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "bet",
+        "name": "net",
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rounds",
-            "name": "bet"
+            "table": "season_results",
+            "name": "net"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "state: Jsonb<Round>",
-        "type_info": "Jsonb",
+        "name": "hands",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "rounds",
-            "name": "state"
+            "table": "season_results",
+            "name": "hands"
           }
         }
       },
       {
         "ordinal": 4,
-        "name": "status",
+        "name": "medal",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rounds",
-            "name": "status"
+            "table": "season_results",
+            "name": "medal"
           }
         }
       }
@@ -69,8 +69,8 @@
       false,
       false,
       false,
-      false
+      true
     ]
   },
-  "hash": "861c7f2ab38805e0261d79d14170ac014bda4734696868e5e099de51f7c8fe18"
+  "hash": "78a1b236a2670fdbdfb5cb501cad0a6badb940fd3a16350041d94ba4f5797d35"
 }

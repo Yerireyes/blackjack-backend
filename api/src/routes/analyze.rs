@@ -17,7 +17,7 @@ const ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Corre el cálculo en un hilo bloqueante (no bloquea el servidor) con límite de
 /// tiempo, y devuelve también los milisegundos que tardó.
-async fn run_engine<T, F>(f: F) -> ApiResult<(T, f64)>
+pub(crate) async fn run_engine<T, F>(f: F) -> ApiResult<(T, f64)>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, EngineError> + Send + 'static,

@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use super::card::{hand_value, is_pair, Card};
 use super::contract::{
-    AllowedActions, CardView, DealerView, HandOutcome, HandView, PlayerView, RoundPhase as Phase,
+    AllowedActions, CardView, DealerView, HandOutcome, HandView, PlayerView, ReviewItem,
+    RoundPhase as Phase,
 };
 use super::shoe::GameShoe;
 use super::GameError;
-use crate::dto::Action;
+use crate::dto::{Action, Allowed, AnalyzeHandRequest, AnalyzeHandResponse};
 use crate::rank::{Rank, NUM_RANKS};
 use crate::rules::{Rules, Surrender};
 
@@ -91,6 +92,9 @@ pub struct Round {
     pub phase: Phase,
     /// El dealer tenía blackjack al revisar la oculta: la ronda terminó en el reparto.
     pub peek_blackjack: bool,
+    /// Ranked: cada decisión evaluada con la información que tenía el jugador.
+    #[serde(default)]
+    pub decisions: Vec<ReviewItem>,
 }
 
 impl Round {
@@ -117,6 +121,7 @@ impl Round {
             },
             phase: Phase::Player,
             peek_blackjack: false,
+            decisions: Vec::new(),
         };
         let dealer_bj = hand_value(&[up, hole], false).blackjack;
         if dealer_checks_hole(rules, up.rank()) && dealer_bj {
@@ -176,6 +181,53 @@ impl Round {
                 && !h.from_split
                 && self.hands.len() == 1,
         }
+    }
+
+    /// La decisión pendiente tal como la ve el jugador, para `analyze_hand`: sus
+    /// cartas, la visible del dealer y lo no visto (la oculta incluida). `None` si
+    /// no hay nada que decidir.
+    pub fn analysis_request(
+        &self,
+        rules: &Rules,
+        shoe: &GameShoe,
+        spare: u32,
+    ) -> Option<AnalyzeHandRequest> {
+        let allowed = self.allowed(rules, spare);
+        if !allowed.stand {
+            return None;
+        }
+        let h = &self.hands[self.active];
+        Some(AnalyzeHandRequest {
+            version: 1,
+            rules: rules.clone(),
+            shoe: self.unseen_counts(shoe),
+            hand: h.cards.iter().map(|c| c.rank()).collect(),
+            dealer_up: self.dealer.up.rank(),
+            split_hands_so_far: (self.hands.len() - 1) as u8,
+            is_split_aces: h.split_aces,
+            allowed: Allowed {
+                double: allowed.double,
+                split: allowed.split,
+                surrender: allowed.surrender,
+            },
+        })
+    }
+
+    /// Guarda la decisión `chosen` de la mano activa frente al análisis de
+    /// [`Round::analysis_request`]. Llamar antes de [`Round::act`].
+    pub fn record_decision(&mut self, chosen: Action, analysis: &AnalyzeHandResponse) {
+        let ev = |a: Action| analysis.actions.iter().find(|r| r.action == a);
+        let (Some(c), Some(b)) = (ev(chosen), ev(analysis.best)) else {
+            return;
+        };
+        self.decisions.push(ReviewItem {
+            hand_index: self.active as u32,
+            chosen,
+            best: analysis.best,
+            ev_chosen: c.ev,
+            ev_best: b.ev,
+            exact: c.exact && b.exact,
+        });
     }
 
     /// Aplica una acción del jugador. Si con ella terminan sus manos, juega el dealer

@@ -57,6 +57,11 @@ export interface RoundView {
 }
 
 /**
+ * Medalla de fin de temporada (solo con el mínimo de manos).
+ */
+export type Medal = "gold" | "silver" | "bronze" | "top10";
+
+/**
  * Qué acciones permite la situación de la mesa (el front puede restringir más).
  */
 export interface Allowed {
@@ -70,6 +75,17 @@ export interface Allowed {
  * J, Q y K no existen para el motor.
  */
 export type Rank = number;
+
+/**
+ * Resultado final en una temporada cerrada.
+ */
+export interface SeasonResult {
+    season: string;
+    rank: number;
+    net: number;
+    hands: number;
+    medal?: Medal;
+}
 
 /**
  * `GET /casual/leaderboard/weekly`.
@@ -94,6 +110,68 @@ export interface WeeklyLeaderboard {
  */
 export interface MyRecords {
     casual: CasualRecords;
+    ranked: RankedRecords;
+}
+
+/**
+ * `GET /ranked/leaderboard?season=AAAA-MM`.
+ */
+export interface RankedLeaderboard {
+    season: string;
+    startsAt: string;
+    endsAt: string;
+    /**
+     * Cerrada: posiciones finales y medallas asignadas.
+     */
+    closed: boolean;
+    minHands: number;
+    /**
+     * Los 100 primeros con el mínimo de manos.
+     */
+    top: RankedRow[];
+    /**
+     * La fila del usuario, si jugó esa temporada (aunque esté en `top`).
+     */
+    me?: RankedRow;
+}
+
+/**
+ * `GET /ranked/me`: la cuenta ranked de la temporada actual.
+ */
+export interface RankedAccountView {
+    id: string;
+    /**
+     * Temporada, `"AAAA-MM"`.
+     */
+    season: string;
+    /**
+     * Fin de la temporada (RFC 3339).
+     */
+    seasonEndsAt: string;
+    balance: number;
+    peak: number;
+    hands: number;
+    refilledTotal: number;
+    /**
+     * Ganancia neta, lo que ordena el ranking: `balance − 500 − refilledTotal`.
+     */
+    net: number;
+    /**
+     * Apuesta máxima para la próxima ronda (0 si el saldo no alcanza el mínimo).
+     */
+    maxBet: number;
+    /**
+     * Si el saldo está bajo el piso y la recarga todavía no está disponible.
+     */
+    refillAvailableAt?: string;
+    /**
+     * Manos necesarias para entrar en el ranking.
+     */
+    minHands: number;
+    /**
+     * Fracción del zapato ya repartida.
+     */
+    penetration: number;
 }
 
 /**
@@ -118,7 +196,8 @@ export interface RoundActionRequest {
 export interface NewRoundRequest {
     kind: RoundKind;
     /**
-     * Casual: id de la partida activa. Si falta, se usa la partida activa.
+     * Casual: id de la partida activa. Si falta, se usa la partida activa. Ranked:
+     * se ignora; siempre es la cuenta de la temporada actual.
      */
     contextId?: string;
     bet: number;
@@ -321,6 +400,38 @@ export interface PlayerView {
      * Índice de la mano que se está jugando.
      */
     active: number;
+}
+
+export interface RankedRecords {
+    /**
+     * Temporadas cerradas en las que entró en el ranking, de la más reciente a la
+     * más antigua.
+     */
+    seasons: SeasonResult[];
+    /**
+     * Mejor posición final.
+     */
+    bestRank?: number;
+}
+
+export interface RankedRow {
+    /**
+     * Posición entre quienes tienen el mínimo de manos, desde 1. Empates comparten
+     * posición. Si `provisional`, es la que tendría con esa ganancia.
+     */
+    rank: number;
+    displayName: string;
+    net: number;
+    hands: number;
+    /**
+     * Todavía no tiene el mínimo de manos (solo puede pasar en `me`).
+     */
+    provisional: boolean;
+    /**
+     * Solo en temporadas cerradas.
+     */
+    medal?: Medal;
+    isMe: boolean;
 }
 
 export interface ReviewItem {

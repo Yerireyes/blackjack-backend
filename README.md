@@ -284,7 +284,9 @@ estrategia, con re-división real):
 | POST | `/play/rounds/{id}/actions` | Pedir, plantarse, doblar, dividir o rendirse | Sí |
 | GET | `/play/active` | La ronda en juego, para retomarla | Sí |
 | GET | `/casual/leaderboard/weekly` | Top 100 por mejor pico de la semana | No |
-| GET | `/me/records` | Récords personales de Casual | Sí |
+| GET | `/ranked/me` | Cuenta Ranked de la temporada actual (la crea con 500) | Sí |
+| GET | `/ranked/leaderboard?season=AAAA-MM` | Top 100 por ganancia neta (mínimo 200 manos) | No |
+| GET | `/me/records` | Récords de Casual y resultados de Ranked | Sí |
 | GET | `/health` | Estado del servicio y de la base | No |
 
 - Errores siempre como `{ "code": "...", "message": "..." }`; `EngineError` → 422.
@@ -298,6 +300,12 @@ estrategia, con re-división real):
   dealer y liquida (motor en `engine/src/game/`). Los tipos (`RoundView`, `CasualRunView`…)
   salen en `contract.ts`. Detalle en la sección 8.1 de la especificación y, para el front, en
   [docs/Front — Fase 3 Casual.md](docs/).
+- **Ranked:** temporadas mensuales con reglas de Las Vegas fijas, piso de 100 con una
+  recarga cada 24 h, apuesta máxima del 25 % del saldo, ranking por ganancia neta y revisión
+  de cada decisión al liquidar (sin `shoeCounts` durante la mano). Una tarea horaria cierra
+  las rondas sin acciones en 24 h (plantándose) y las temporadas terminadas (posiciones y
+  medallas). Detalle en la sección 8.2 de la especificación y, para el front, en
+  [docs/Front — Fase 4 Ranked.md](docs/).
 - Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
   automáticamente) en la sección 2 de
   [docs/Especificación — Cuentas, Casual y Ranked.md](docs/).
@@ -389,8 +397,8 @@ mazos tarda ~1–2 ms.
 
 ## Pendiente
 
-- Ranked (fase 4) y extras (fase 5) de la especificación. En Casual faltan el récord de
-  racha de decisiones óptimas y el cierre automático de rondas abandonadas (sección 8.1).
+- Extras (fase 5) de la especificación. En Casual falta el récord de racha de decisiones
+  óptimas (sección 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
 - CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
   benchmarks (> 20 %).

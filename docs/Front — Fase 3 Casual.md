@@ -1,6 +1,14 @@
 # Front — Fase 3: Casual
 
-**Versión del 2026-10-28 (primera).** Qué cambió respecto de lo que el front conoce:
+**Versión del 2026-10-28 (revisión 2).** Cambios respecto de la primera versión:
+
+- `kind: "ranked"` ya no responde 501 `not_available`: Ranked existe (ver «Front — Fase 4
+  Ranked.md»).
+- Una ronda sin acciones durante 24 h se cierra sola plantándose (sección 3, paso 2).
+- `MyRecords` trae también `ranked` (sección 6).
+- `Retry-After` del 429 nunca es 0 (mínimo 1 s).
+
+Primera versión (2026-10-28). Qué cambió respecto de lo que el front conocía:
 
 - Nuevo modo **Casual**: el servidor baraja, reparte, valida cada acción, juega el dealer y
   liquida. Endpoints nuevos `/casual/*`, `/play/*` y `/me/records`.
@@ -20,8 +28,8 @@ Este documento solo existe en `blackjack-backend/docs/`.
 | Partidas Casual (crear, retomar, retirarse) | Listo | Por hacer |
 | Rondas en el servidor (`/play/*`) | Listo | Por hacer |
 | Ranking semanal y récords | Listo | Por hacer |
-| Revisión de decisiones al liquidar | Solo llegará con Ranked | No hacer |
-| Ranked (fase 4) | No existe (`/play/rounds` con `kind: "ranked"` → 501) | **No hacer todavía** |
+| Revisión de decisiones al liquidar | Solo en Ranked | No en Casual |
+| Ranked (fase 4) | Listo | Ver «Front — Fase 4 Ranked.md» |
 
 Práctica no cambia: sigue en el navegador y sin cuenta.
 
@@ -50,7 +58,7 @@ Todos los importes son fichas enteras (`number`).
 | POST | `/casual/runs` | `{ preset }` **o** `{ rules }` | 201 `CasualRunView` | 400 `bad_request` (ninguno o los dos), 422 `engine_error` (reglas inválidas), 409 `run_active`, 409 `display_name_required` |
 | GET | `/casual/runs/active` | — | 200 `CasualRunView` | 404 `no_active_run` |
 | POST | `/casual/runs/{id}/retire` | — | 200 `CasualRunView` (`retired`) | 404 `not_found`, 409 `run_finished`, 409 `round_active` |
-| POST | `/play/rounds` | `{ kind: "casual", contextId?, bet, idempotencyKey }` | 201 `RoundView` | 400 `bad_request` (clave o id no UUID), 400 `bet_out_of_range`, 409 `insufficient_funds`, 409 `round_active`, 409 `run_finished`, 404 `no_active_run` / `not_found`, 501 `not_available` (ranked) |
+| POST | `/play/rounds` | `{ kind: "casual", contextId?, bet, idempotencyKey }` | 201 `RoundView` | 400 `bad_request` (clave o id no UUID), 400 `bet_out_of_range`, 409 `insufficient_funds`, 409 `round_active`, 409 `run_finished`, 404 `no_active_run` / `not_found` |
 | POST | `/play/rounds/{id}/actions` | `{ action, idempotencyKey }` | 200 `RoundView` | 409 `action_not_allowed`, 409 `no_active_round` (ya liquidada), 404 `not_found` |
 | GET | `/play/active` | — | 200 `RoundView` | 404 `no_active_round` |
 | GET | `/casual/leaderboard/weekly` | — | 200 `WeeklyLeaderboard` | — (sin sesión no trae `me`) |
@@ -73,7 +81,10 @@ Todos los importes son fichas enteras (`number`).
    paralelo.
    - Sin partida (404): ofrecer elegir reglas y `POST /casual/runs`.
    - Con ronda activa (200): **retomarla**: mostrarla tal cual y seguir desde ahí. Pasa si
-     el usuario recargó o perdió la conexión a mitad de una mano.
+     el usuario recargó o perdió la conexión a mitad de una mano. Si pasan 24 h sin
+     acciones, el servidor la cierra plantándose y ya no aparece.
+   - La ronda activa puede ser de Ranked (`kind: "ranked"`): entonces hay que retomarla en
+     Ranked; repartir en Casual daría `round_active`.
 3. **Apostar y repartir:** `POST /play/rounds`. Si la ronda se resuelve en el reparto
    (blackjack del jugador o del dealer con peek), ya viene con `phase: "settled"`.
 4. **Decidir:** con `phase: "player"`, mostrar solo los botones de `allowed` y mandar cada
@@ -116,7 +127,7 @@ Todos los importes son fichas enteras (`number`).
   comparten `rank`. `me` trae la fila del usuario si jugó esa semana (aunque ya esté en
   `top`, con `isMe: true`). Se puede ver sin sesión.
 - **`GET /me/records`:** `casual.runs` (partidas jugadas), `bestPeak` y `mostHands`. Los
-  dos últimos faltan si todavía no hay partidas.
+  dos últimos faltan si todavía no hay partidas. `ranked` se explica en la fase 4.
 
 ### 7. Mensajes sugeridos
 
@@ -142,7 +153,7 @@ Todos los importes son fichas enteras (`number`).
 - **No guardar el saldo de Casual en `chipsStore`** como si fuera de Práctica: es de la
   partida y lo trae cada respuesta.
 - **No reutilizar una clave de idempotencia** para otra acción.
-- **No mostrar `review`** ni construir Ranked, temporadas ni recargas: son de la fase 4.
+- **No esperar `review` en Casual:** solo viene en Ranked (fase 4).
 - **No mostrar emails** en el ranking: solo `displayName`.
 - **No editar `contract.ts` a mano.**
 

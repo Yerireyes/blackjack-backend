@@ -1441,19 +1441,10 @@ async fn casual_bets_and_bust(pool: PgPool) {
     let app = test_app(pool.clone(), 10);
     let ana = register(&app, "ana@example.com").await;
 
-    // Sin partida activa no se reparte; Ranked todavía no existe.
+    // Sin partida activa no se reparte.
     let res = deal_round(&app, &ana, 10, &key()).await;
     assert_eq!(res.status, StatusCode::NOT_FOUND);
     assert_eq!(res.body["code"], "no_active_run");
-    let res = send(
-        &app,
-        "POST",
-        "/api/v1/play/rounds",
-        Some(json!({ "kind": "ranked", "bet": 10, "idempotencyKey": key() })),
-        Some(&ana),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::NOT_IMPLEMENTED);
 
     let run = new_run(&app, &ana, "vegas").await;
     for bet in [0, 5, 15, 510] {
@@ -1518,6 +1509,11 @@ async fn play_is_rate_limited_per_user(pool: PgPool) {
     let res = deal_round(&app, &ana, 10, "no-es-uuid").await;
     assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(res.body["code"], "rate_limited");
+    // La recarga es de 200 ms, pero nunca se pide esperar 0 s.
+    assert_eq!(
+        res.body["message"],
+        "demasiadas peticiones; reintenta en 1 s"
+    );
     // Beto, desde la misma IP, tiene su propio límite.
     new_run(&app, &beto, "vegas").await;
 }
@@ -1541,7 +1537,10 @@ async fn casual_leaderboard_and_records(pool: PgPool) {
     let carla = cookie(register_named(&app, "carla@example.com", "Carla").await);
 
     let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
-    assert_eq!(res.body, json!({ "casual": { "runs": 0 } }));
+    assert_eq!(
+        res.body,
+        json!({ "casual": { "runs": 0 }, "ranked": { "seasons": [] } })
+    );
 
     let a1 = new_run(&app, &ana, "vegas").await;
     set_run(&pool, &a1, "peak = 900, hands = 40, status = 'retired'").await;
@@ -1584,6 +1583,367 @@ async fn casual_leaderboard_and_records(pool: PgPool) {
     let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
     assert_eq!(
         res.body,
-        json!({ "casual": { "runs": 2, "bestPeak": 900, "mostHands": 70 } })
+        json!({
+            "casual": { "runs": 2, "bestPeak": 900, "mostHands": 70 },
+            "ranked": { "seasons": [] }
+        })
     );
+}
+
+// ---- Ranked ----
+
+async fn ranked_me(app: &Router, cookie: &str) -> Value {
+    let res = send(app, "GET", "/api/v1/ranked/me", None, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    res.body
+}
+
+async fn ranked_deal(app: &Router, cookie: &str, bet: i64) -> Res {
+    send(
+        app,
+        "POST",
+        "/api/v1/play/rounds",
+        Some(json!({ "kind": "ranked", "bet": bet, "idempotencyKey": key() })),
+        Some(cookie),
+    )
+    .await
+}
+
+async fn set_account(pool: &PgPool, account: &Value, sql_set: &str) {
+    // Solo con literales de los tests.
+    let sql = format!("UPDATE ranked_accounts SET {sql_set} WHERE id = $1::uuid");
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(account["id"].as_str().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn stack_account(pool: &PgPool, account: &Value, top: &[Face]) {
+    let shoe = serde_json::to_value(GameShoe::stacked(6, top)).unwrap();
+    sqlx::query("UPDATE ranked_accounts SET shoe = $2 WHERE id = $1::uuid")
+        .bind(account["id"].as_str().unwrap())
+        .bind(shoe)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Reparte 10,7 contra 10 + oculta 10 y se planta: pierde la apuesta.
+async fn ranked_lose(
+    app: &Router,
+    pool: &PgPool,
+    cookie: &str,
+    account: &Value,
+    bet: i64,
+) -> Value {
+    use Face::*;
+    stack_account(pool, account, &[Ten, Ten, Seven, Ten]).await;
+    let res = ranked_deal(app, cookie, bet).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    let round = res.body["id"].as_str().unwrap().to_string();
+    let res = act(app, cookie, &round, "stand", &key()).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["result"]["net"], -bet);
+    res.body
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ranked_account_and_bets(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let res = send(&app, "GET", "/api/v1/ranked/me", None, None).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+
+    let acc = ranked_me(&app, &ana).await;
+    let season = acc["season"].as_str().unwrap();
+    assert_eq!(season.len(), 7, "AAAA-MM: {season}");
+    assert_eq!(acc["balance"], 500);
+    assert_eq!(acc["peak"], 500);
+    assert_eq!(acc["hands"], 0);
+    assert_eq!(acc["net"], 0);
+    assert_eq!(acc["refilledTotal"], 0);
+    assert_eq!(acc["maxBet"], 120, "25 % de 500, en decenas");
+    assert_eq!(acc["minHands"], 200);
+    assert!(acc.get("refillAvailableAt").is_none());
+    // Una cuenta por temporada.
+    assert_eq!(ranked_me(&app, &ana).await["id"], acc["id"]);
+
+    for bet in [0, 5, 15, 130] {
+        let res = ranked_deal(&app, &ana, bet).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "apuesta {bet}");
+        assert_eq!(res.body["code"], "bet_out_of_range");
+    }
+    set_account(&pool, &acc, "balance = 1000").await;
+    assert_eq!(ranked_me(&app, &ana).await["maxBet"], 250);
+    set_account(&pool, &acc, "balance = 4000").await;
+    assert_eq!(ranked_me(&app, &ana).await["maxBet"], 500);
+    assert_eq!(ranked_me(&app, &ana).await["net"], 3500);
+
+    // El nombre sale en el ranking: no se juega con el provisional.
+    sqlx::query("UPDATE users SET display_name_set = false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = ranked_deal(&app, &ana, 10).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "display_name_required");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ranked_round_has_no_aids_and_reviews_each_decision(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let acc = ranked_me(&app, &ana).await;
+
+    // Jugador 10,5 contra 9 (+ oculta 7): pide un 3 (18) y se planta; el dealer
+    // pide con 16 y se pasa con un 10.
+    stack_account(&pool, &acc, &[Ten, Nine, Five, Seven, Three, Ten]).await;
+    let res = ranked_deal(&app, &ana, 20).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    let view = res.body;
+    assert_eq!(view["kind"], "ranked");
+    assert_eq!(view["contextId"], acc["id"]);
+    assert!(view.get("shoeCounts").is_none(), "sin ayudas en ranked");
+    assert_eq!(view["wallet"], json!({ "balance": 500, "maxBet": 120 }));
+    let res = send(&app, "GET", "/api/v1/play/active", None, Some(&ana)).await;
+    assert_eq!(res.body, view);
+    let round = view["id"].as_str().unwrap().to_string();
+
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert!(res.body.get("shoeCounts").is_none());
+    assert!(
+        res.body.get("result").is_none(),
+        "la revisión llega al terminar"
+    );
+    let res = act(&app, &ana, &round, "stand", &key()).await;
+    assert_eq!(res.body["phase"], "settled");
+    assert_eq!(res.body["result"]["net"], 20);
+    assert_eq!(res.body["wallet"]["balance"], 520);
+    let review = res.body["result"]["review"].as_array().unwrap().clone();
+    assert_eq!(review.len(), 2);
+
+    // La revisión coincide con /analyze/hand para lo que veía el jugador: sus
+    // cartas, el 9 y la oculta contada como no vista.
+    let mut shoe = [24u32; 10];
+    shoe[9] = 96;
+    for rank in [9, 8, 4] {
+        shoe[rank] -= 1;
+    }
+    let analysis = |hand: Value, shoe: [u32; 10], allowed: Value| {
+        json!({
+            "version": 1, "rules": rules(), "shoe": shoe, "hand": hand, "dealerUp": 8,
+            "splitHandsSoFar": 0, "isSplitAces": false, "allowed": allowed
+        })
+    };
+    let first = analysis(
+        json!([9, 4]),
+        shoe,
+        json!({ "double": true, "split": false, "surrender": true }),
+    );
+    shoe[2] -= 1;
+    let second = analysis(
+        json!([9, 4, 2]),
+        shoe,
+        json!({ "double": false, "split": false, "surrender": false }),
+    );
+    for (item, (req, chosen)) in review.iter().zip([(first, "hit"), (second, "stand")]) {
+        let res = send(&app, "POST", "/api/v1/analyze/hand", Some(req), None).await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        let ev = |action: &Value| {
+            res.body["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| &a["action"] == action)
+                .unwrap()["ev"]
+                .clone()
+        };
+        let best = &res.body["best"];
+        assert_eq!(item["handIndex"], 0);
+        assert_eq!(item["chosen"], chosen);
+        assert_eq!(&item["best"], best);
+        assert_eq!(item["evChosen"], ev(&json!(chosen)));
+        assert_eq!(item["evBest"], ev(best));
+    }
+
+    let acc = ranked_me(&app, &ana).await;
+    assert_eq!((&acc["hands"], &acc["peak"]), (&json!(1), &json!(520)));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ranked_refills_once_a_day(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let acc = ranked_me(&app, &ana).await;
+
+    // Al bajar de 100 se recarga hasta 100 (la primera vez siempre se puede).
+    set_account(&pool, &acc, "balance = 110").await;
+    let view = ranked_lose(&app, &pool, &ana, &acc, 20).await;
+    assert_eq!(view["result"]["refilled"], 10);
+    assert_eq!(view["wallet"]["balance"], 100);
+    assert!(view["wallet"].get("refillAvailableAt").is_none());
+
+    // Antes de 24 h no hay otra recarga: se sigue con lo que queda.
+    set_account(&pool, &acc, "balance = 30").await;
+    let view = ranked_lose(&app, &pool, &ana, &acc, 10).await;
+    assert!(view["result"].get("refilled").is_none());
+    assert_eq!(view["wallet"]["balance"], 20);
+    assert!(view["wallet"]["refillAvailableAt"].is_string());
+    set_account(&pool, &acc, "balance = 5").await;
+    let res = ranked_deal(&app, &ana, 10).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "refill_pending");
+    let me = ranked_me(&app, &ana).await;
+    assert_eq!(me["maxBet"], 0);
+    assert!(me["refillAvailableAt"].is_string());
+
+    // Pasadas 24 h, la recarga se aplica al volver; no suma a la ganancia neta.
+    set_account(&pool, &acc, "last_refill_at = now() - interval '25 hours'").await;
+    let me = ranked_me(&app, &ana).await;
+    assert_eq!(me["balance"], 100);
+    assert_eq!(me["refilledTotal"], 105);
+    assert_eq!(me["net"], 100 - 500 - 105);
+    assert!(me.get("refillAvailableAt").is_none());
+    let refills: i64 = sqlx::query_scalar("SELECT count(*) FROM ranked_refills")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(refills, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ranked_leaderboard_and_seasons(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    let carla = register(&app, "carla@example.com").await;
+    let a = ranked_me(&app, &ana).await;
+    let b = ranked_me(&app, &beto).await;
+    let c = ranked_me(&app, &carla).await;
+    set_account(&pool, &a, "hands = 200, balance = 900").await;
+    set_account(&pool, &b, "hands = 250, balance = 600, refilled_total = 50").await;
+    // Más ganancia, pero sin el mínimo de manos.
+    set_account(&pool, &c, "hands = 199, balance = 2000").await;
+
+    let uri = "/api/v1/ranked/leaderboard";
+    let res = send(&app, "GET", uri, None, Some(&carla)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["season"], a["season"]);
+    assert_eq!(res.body["closed"], false);
+    assert_eq!(
+        res.body["top"],
+        json!([
+            { "rank": 1, "displayName": "ana", "net": 400, "hands": 200,
+              "provisional": false, "isMe": false },
+            { "rank": 2, "displayName": "beto", "net": 50, "hands": 250,
+              "provisional": false, "isMe": false }
+        ])
+    );
+    assert_eq!(
+        res.body["me"],
+        json!({ "rank": 1, "displayName": "carla", "net": 1500, "hands": 199,
+                "provisional": true, "isMe": true })
+    );
+    let res = send(&app, "GET", uri, None, Some(&beto)).await;
+    assert_eq!(res.body["top"][1]["isMe"], true);
+    assert_eq!(res.body["me"]["rank"], 2);
+    let res = send(&app, "GET", uri, None, None).await;
+    assert!(res.body.get("me").is_none());
+    let res = send(&app, "GET", &format!("{uri}?season=1999-01"), None, None).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    // Una temporada terminada se cierra con posiciones y medallas, pero no mientras
+    // tenga una ronda en juego.
+    sqlx::query(
+        "INSERT INTO seasons (id, starts_at, ends_at)
+         VALUES ('2020-01', '2020-01-01T00:00:00Z', '2020-02-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE ranked_accounts SET season_id = '2020-01'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = ranked_deal(&app, &beto, 10).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    // La ronda nueva va a la cuenta de la temporada actual.
+    assert_ne!(res.body["contextId"], b["id"]);
+    let round = res.body["id"].as_str().unwrap().to_string();
+    // Simula una ronda que empezó en la temporada vieja y sigue en juego.
+    sqlx::query("UPDATE rounds SET context_id = $1::uuid")
+        .bind(b["id"].as_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(api::routes::ranked::close_seasons(&pool).await.unwrap(), 0);
+    sqlx::query("UPDATE rounds SET status = 'settled' WHERE id = $1::uuid")
+        .bind(&round)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(api::routes::ranked::close_seasons(&pool).await.unwrap(), 1);
+    assert_eq!(api::routes::ranked::close_seasons(&pool).await.unwrap(), 0);
+
+    let res = send(
+        &app,
+        "GET",
+        &format!("{uri}?season=2020-01"),
+        None,
+        Some(&carla),
+    )
+    .await;
+    assert_eq!(res.body["closed"], true);
+    assert_eq!(res.body["top"][0]["medal"], "gold");
+    assert_eq!(res.body["top"][1]["medal"], "silver");
+    assert!(res.body["me"].get("medal").is_none());
+
+    let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
+    assert_eq!(
+        res.body["ranked"],
+        json!({
+            "seasons": [{ "season": "2020-01", "rank": 1, "net": 400, "hands": 200,
+                          "medal": "gold" }],
+            "bestRank": 1
+        })
+    );
+    let res = send(&app, "GET", "/api/v1/me/records", None, Some(&carla)).await;
+    assert_eq!(res.body["ranked"], json!({ "seasons": [] }));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn stale_rounds_are_closed_by_standing(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let run = new_run(&app, &ana, "vegas").await;
+    // Jugador 10,8 contra 6 + oculta 10: el dealer pide un 5 → 21.
+    stack(&pool, &run, 6, &[Ten, Six, Eight, Ten, Five]).await;
+    let res = deal_round(&app, &ana, 50, &key()).await;
+    let round = res.body["id"].as_str().unwrap().to_string();
+
+    // Con actividad reciente no se toca.
+    assert_eq!(
+        api::routes::play::close_stale_rounds(&pool).await.unwrap(),
+        0
+    );
+    sqlx::query("UPDATE rounds SET created_at = now() - interval '25 hours'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        api::routes::play::close_stale_rounds(&pool).await.unwrap(),
+        1
+    );
+
+    let res = send(&app, "GET", "/api/v1/play/active", None, Some(&ana)).await;
+    assert_eq!(res.body["code"], "no_active_round");
+    let res = send(&app, "GET", "/api/v1/casual/runs/active", None, Some(&ana)).await;
+    assert_eq!(res.body["balance"], 450);
+    assert_eq!(res.body["hands"], 1);
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(res.body["code"], "no_active_round");
 }

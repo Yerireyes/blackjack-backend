@@ -243,6 +243,21 @@ pub fn round_active() -> ApiError {
     )
 }
 
+/// El nombre es público en los rankings: no se juega con el provisional.
+pub async fn require_display_name(db: &mut PgConnection, user_id: Uuid) -> ApiResult<()> {
+    let name_set = sqlx::query_scalar!("SELECT display_name_set FROM users WHERE id = $1", user_id)
+        .fetch_one(db)
+        .await?;
+    if !name_set {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "display_name_required",
+            "elige tu nombre antes de jugar",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn has_active_round(db: &mut PgConnection, user_id: Uuid) -> ApiResult<bool> {
     let active = sqlx::query_scalar!(
         r#"SELECT EXISTS (SELECT 1 FROM rounds WHERE user_id = $1 AND status = 'active') AS "active!""#,
@@ -272,17 +287,7 @@ pub async fn create_run(
 
     let mut tx = state.pool.begin().await?;
     lock_user(&mut tx, user.id).await?;
-    // El nombre es público en los rankings: no se juega con el provisional.
-    let name_set = sqlx::query_scalar!("SELECT display_name_set FROM users WHERE id = $1", user.id)
-        .fetch_one(&mut *tx)
-        .await?;
-    if !name_set {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "display_name_required",
-            "elige tu nombre antes de jugar",
-        ));
-    }
+    require_display_name(&mut tx, user.id).await?;
     let run = Run {
         id: Uuid::new_v4(),
         shoe: shuffled_shoe(rules.decks),
@@ -420,14 +425,15 @@ pub async fn weekly_leaderboard(
     }))
 }
 
-/// `GET /me/records`: récords personales de Casual.
+/// `GET /me/records`: récords personales de Casual y resultados de Ranked.
 pub async fn records(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<MyRecords>> {
+    let mut db = state.pool.acquire().await?;
     let r = sqlx::query!(
         r#"SELECT count(*) AS "runs!", max(peak) AS best_peak, max(hands) AS most_hands
            FROM casual_runs WHERE user_id = $1"#,
         user.id
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *db)
     .await?;
     Ok(Json(MyRecords {
         casual: CasualRecords {
@@ -435,6 +441,7 @@ pub async fn records(State(state): State<AppState>, user: AuthUser) -> ApiResult
             best_peak: r.best_peak,
             most_hands: r.most_hands.map(|h| h.max(0) as u32),
         },
+        ranked: super::ranked::records(&mut db, user.id).await?,
     }))
 }
 

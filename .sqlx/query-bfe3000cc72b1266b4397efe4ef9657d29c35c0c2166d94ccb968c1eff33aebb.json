@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE ranked_accounts\n             SET shoe = $2, balance = $3, peak = $4, hands = $5, refilled_total = $6,\n                 last_refill_at = $7\n             WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bfe3000cc72b1266b4397efe4ef9657d29c35c0c2166d94ccb968c1eff33aebb"
+}
