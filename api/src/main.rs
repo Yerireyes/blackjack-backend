@@ -39,6 +39,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let play = limits.play.limiter().clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            every.tick().await;
+            play.retain_recent();
+        }
+    });
+
     // Borra cada hora las sesiones de login vencidas o revocadas.
     let purge_pool = pool.clone();
     tokio::spawn(async move {

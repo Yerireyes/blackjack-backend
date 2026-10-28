@@ -8,6 +8,7 @@
 pub mod dealer;
 pub mod dto;
 pub mod error;
+pub mod game;
 pub mod hand;
 pub mod hole;
 pub mod outcome;

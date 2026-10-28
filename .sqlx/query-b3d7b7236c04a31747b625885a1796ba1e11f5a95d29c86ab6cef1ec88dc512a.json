@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO round_actions (id, round_id, seq, action, idempotency_key, response)\n         VALUES ($1, $2, (SELECT count(*) + 1 FROM round_actions WHERE round_id = $2), $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b3d7b7236c04a31747b625885a1796ba1e11f5a95d29c86ab6cef1ec88dc512a"
+}

@@ -277,13 +277,28 @@ estrategia, con re-división real):
 | POST | `/sessions/{id}/hands` | Registra una mano (cartas, acción elegida y óptima, EVs) | Sí |
 | GET | `/sessions/{id}/stats` | Manos, % óptimas, EV perdido, decisiones aproximadas, W/P/L | Sí |
 | POST | `/sessions/{id}/end` | Cierra la sesión (ya no admite manos) | Sí |
+| POST | `/casual/runs` | Nueva partida Casual: 500 fichas, `{ preset }` o `{ rules }` | Sí |
+| GET | `/casual/runs/active` | La partida Casual activa | Sí |
+| POST | `/casual/runs/{id}/retire` | Se retira de la partida | Sí |
+| POST | `/play/rounds` | Apuesta y reparte (el servidor baraja y reparte) | Sí |
+| POST | `/play/rounds/{id}/actions` | Pedir, plantarse, doblar, dividir o rendirse | Sí |
+| GET | `/play/active` | La ronda en juego, para retomarla | Sí |
+| GET | `/casual/leaderboard/weekly` | Top 100 por mejor pico de la semana | No |
+| GET | `/me/records` | Récords personales de Casual | Sí |
 | GET | `/health` | Estado del servicio y de la base | No |
 
 - Errores siempre como `{ "code": "...", "message": "..." }`; `EngineError` → 422.
 - `/analyze/*` corre en `spawn_blocking` con límite de 5 s y límite de tasa por IP
   (`ANALYZE_REPLENISH_MS`, `ANALYZE_BURST`). Las rutas de cuenta (registro, login,
   Google y `PATCH /me`) tienen su propio límite (`AUTH_BURST`). La IP sale de
-  `X-Forwarded-For` solo si la conexión viene de `TRUSTED_PROXIES` (ver producción).- Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
+  `X-Forwarded-For` solo si la conexión viene de `TRUSTED_PROXIES` (ver producción).
+  Las rutas que cambian el juego (`/play/*` y crear o cerrar partidas) tienen un límite por
+  usuario: 5 por segundo con ráfaga `PLAY_BURST` (10).
+- **Casual:** el servidor guarda el orden del zapato, reparte, valida cada acción, juega el
+  dealer y liquida (motor en `engine/src/game/`). Los tipos (`RoundView`, `CasualRunView`…)
+  salen en `contract.ts`. Detalle en la sección 8.1 de la especificación y, para el front, en
+  [docs/Front — Fase 3 Casual.md](docs/).
+- Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
   automáticamente) en la sección 2 de
   [docs/Especificación — Cuentas, Casual y Ranked.md](docs/).
 - **Front y API comparten origen.** El front llama con URLs relativas (`/api/v1/...`) y
@@ -374,6 +389,8 @@ mazos tarda ~1–2 ms.
 
 ## Pendiente
 
+- Ranked (fase 4) y extras (fase 5) de la especificación. En Casual faltan el récord de
+  racha de decisiones óptimas y el cierre automático de rondas abandonadas (sección 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
 - CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
   benchmarks (> 20 %).

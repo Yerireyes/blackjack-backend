@@ -11,8 +11,12 @@ use std::sync::Arc;
 
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request};
+use axum_extra::extract::cookie::CookieJar;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorError;
+use uuid::Uuid;
+
+use crate::auth::{JwtKeys, COOKIE_NAME};
 
 const X_FORWARDED_FOR: &str = "x-forwarded-for";
 
@@ -79,6 +83,42 @@ impl KeyExtractor for ClientIpKeyExtractor {
             .ok_or(GovernorError::UnableToExtractKey)?
             .ip();
         Ok(self.client_ip(peer, req.headers()))
+    }
+}
+
+/// Clave del límite de tasa de las rutas de juego: el usuario del JWT de la cookie
+/// (sin consultar la base; si la sesión no vale, el handler responde 401) o, sin
+/// sesión, la IP.
+#[derive(Clone)]
+pub struct UserKeyExtractor {
+    ip: ClientIpKeyExtractor,
+    jwt: JwtKeys,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UserKey {
+    User(Uuid),
+    Ip(IpAddr),
+}
+
+impl UserKeyExtractor {
+    pub fn new(ip: ClientIpKeyExtractor, jwt: JwtKeys) -> UserKeyExtractor {
+        UserKeyExtractor { ip, jwt }
+    }
+}
+
+impl KeyExtractor for UserKeyExtractor {
+    type Key = UserKey;
+
+    fn extract<T>(&self, req: &Request<T>) -> Result<UserKey, GovernorError> {
+        let jar = CookieJar::from_headers(req.headers());
+        match jar
+            .get(COOKIE_NAME)
+            .and_then(|c| self.jwt.verify(c.value()))
+        {
+            Some(token) => Ok(UserKey::User(token.user_id)),
+            None => self.ip.extract(req).map(UserKey::Ip),
+        }
     }
 }
 

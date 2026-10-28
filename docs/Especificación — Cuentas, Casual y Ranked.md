@@ -344,6 +344,7 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 interface RoundView {
   id: string;
   kind: 'casual' | 'ranked';
+  contextId: string;              // la partida casual (o la cuenta ranked)
   bet: number;
   phase: 'player' | 'settled';    // el turno del dealer se resuelve dentro de la misma respuesta
   player: { hands: HandView[]; active: number };
@@ -373,7 +374,9 @@ interface ReviewItem { handIndex: number; chosen: Action; best: Action; evChosen
 Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
 `round_active`, `no_active_round`, `bet_out_of_range`, `insufficient_funds`,
 `action_not_allowed`, `run_finished`, `refill_pending`, `display_name_taken`,
-`display_name_invalid`.
+`display_name_invalid`. Añadidos al implementar Casual: `run_active`, `no_active_run`,
+`display_name_required` y `not_available` (Ranked antes de la fase 4). El detalle por
+endpoint está en «Front — Fase 3 Casual.md».
 
 ---
 
@@ -385,31 +388,70 @@ Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
    vincula solo (`account_exists`) y sí se vincula de forma explícita desde la sesión;
    `/auth/me` nunca devuelve el hash. Se prueban contra un endpoint de tokens de Google
    simulado, que también comprueba PKCE.
-2. **Motor de juego.** Módulo puro de la sección 3 con los casos de `tableStore.test.ts`
+2. **Motor de juego (hecha).** Módulo puro de la sección 3 con los casos de `tableStore.test.ts`
    portados, más propiedades: el zapato nunca reparte una carta dos veces; el neto siempre es
-   entero; la oculta nunca aparece en un `RoundView` sin revelar.
-3. **Casual.** Tablas, endpoints de 7.1, récords y ranking semanal. *Tests:* dos rondas activas
+   entero; la oculta nunca aparece en un `RoundView` sin revelar. Está en `engine/src/game/`
+   (ver 8.1).
+3. **Casual (hecha).** Tablas, endpoints de 7.1, récords y ranking semanal. *Tests:* dos rondas activas
    → 409; misma `idempotencyKey` → misma respuesta y un solo descuento; retirarse con una ronda
-   activa → 409; con saldo < 10 la partida queda `busted`.
+   activa → 409; con saldo < 10 la partida queda `busted`. Decisiones en 8.1.
 4. **Ranked.** Temporadas, piso, recarga cada 24 h, apuesta máxima relativa, ganancia neta,
    mínimo de manos, revisión. *Tests:* recarga solo una vez en 24 h; `max_bet` según la
    fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
    `review` coincide con `analyze_hand` para el mismo estado.
 5. **Extras.** Reto diario, logros, cosméticos y Facebook.
 
+### 8.1 Cómo quedaron las fases 2 y 3
+
+**Motor (`engine/src/game/`).** `GameShoe` (orden real, Fisher–Yates con el generador que
+le pasa la API: `rand::rng()`, ChaCha sembrado desde el SO), `Round` (reparto, `allowed`,
+`act`, turno del dealer y liquidación) y los DTOs de 7.2 en `contract.rs`. Se rebaraja antes
+de repartir si se alcanzó la penetración o si quedan menos cartas de las que necesita la peor
+ronda (`60 + 31 × maxSplitHands + 26` puntos), así el motor del front siempre puede calcular.
+El neto en fichas es `round(neto × apuesta)` como `Math.round` de JavaScript.
+
+**API.** Decisiones que completan o ajustan la especificación:
+
+- **Bloqueo por usuario.** Cada operación de juego (crear o cerrar partida, repartir, actuar)
+  empieza con `SELECT … FROM users … FOR UPDATE`, y después bloquea la partida y la ronda. Así
+  una clave de idempotencia repetida en paralelo espera y devuelve la respuesta guardada.
+- **Idempotencia.** El reparto guarda su respuesta en `rounds.response` con
+  `UNIQUE (user_id, idempotency_key)`; cada acción, en `round_actions.response` con
+  `UNIQUE (round_id, idempotency_key)`. Repetir la clave devuelve **la misma respuesta**,
+  aunque la ronda haya avanzado después.
+- **Nombre obligatorio.** `POST /casual/runs` responde 409 `display_name_required` si el
+  nombre sigue siendo provisional: el nombre sale en el ranking.
+- **`contextId` opcional** en `POST /play/rounds`: sin él se usa la partida activa.
+- **Ranked** responde 501 `not_available` hasta la fase 4.
+- **Ranking semanal:** el mejor pico por usuario entre las partidas **empezadas** esa semana
+  (desde el lunes 00:00 UTC). Es público: sin sesión se ve sin la fila propia.
+- **Límite de tasa por usuario** en `POST /casual/runs`, `/casual/runs/{id}/retire`,
+  `/play/rounds` y `/play/rounds/{id}/actions`: 5 por segundo con ráfaga `PLAY_BURST` (10). La
+  clave es el usuario del JWT (sin consultar la base) o, sin sesión, la IP.
+- **Casual sin revisión.** `result.review` no viene en Casual: el front ya tiene
+  `shoeCounts` y su motor. El cálculo por decisión llega con Ranked (fase 4).
+
+**Pendiente de Casual:**
+
+- Récord «mejor racha de decisiones óptimas»: necesita evaluar cada decisión en el servidor,
+  que llega con la revisión de Ranked.
+- Cierre automático de rondas sin acciones durante 24 h (3.3, *ajustable*). Hoy la ronda
+  queda activa hasta que el usuario vuelve; `GET /play/active` la devuelve.
+
 ---
 
 ## 9. Seguridad: lista de control
 
-- [ ] La oculta y el orden del zapato jamás salen del servidor antes de tiempo (test de propiedad).
-- [ ] CSPRNG para barajar; la semilla del reto diario es secreta (`DAILY_SEED_SECRET`).
-- [ ] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
-- [ ] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
+- [x] La oculta y el orden del zapato jamás salen del servidor antes de tiempo (test de propiedad).
+- [ ] CSPRNG para barajar (hecho); la semilla del reto diario es secreta (`DAILY_SEED_SECRET`,
+      fase 5).
+- [x] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
+- [x] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
 - [ ] Rankings sin emails; `display_name` validado y con lista de reservados.
 - [x] OAuth: `state` + PKCE, cookie temporal cifrada, intercambio del código solo en el
       servidor, nunca vincular por email automáticamente (solo de forma explícita con
       sesión) y crear cuentas solo con email verificado.
-- [ ] Límite de tasa en registro, login, OAuth (hecho) y acciones de juego.
+- [x] Límite de tasa en registro, login, OAuth y acciones de juego.
 - [ ] Cookies `Secure` en producción (`cookie_secure`); CORS solo para `FRONTEND_ORIGIN`.
 - [x] **Sesiones revocables.** Tabla `auth_sessions (id, user_id, created_at, expires_at,
       revoked_at, last_seen_at, user_agent)`; el JWT lleva su `id` como `sid`. Cada petición

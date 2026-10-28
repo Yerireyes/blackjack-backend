@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE casual_runs\n             SET shoe = $2, balance = $3, peak = $4, hands = $5, status = $6, ended_at = $7\n             WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8a126d05cb371b65be4a2b936e2bda73f12515271b18390e11cbca70aefac07e"
+}

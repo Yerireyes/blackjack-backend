@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH best AS (\n               SELECT user_id, max(peak) AS peak FROM casual_runs\n               WHERE started_at >= $1 GROUP BY user_id\n           ), ranked AS (\n               SELECT b.user_id, b.peak, u.display_name,\n                      rank() OVER (ORDER BY b.peak DESC) AS pos,\n                      row_number() OVER (ORDER BY b.peak DESC, u.display_name_key) AS n\n               FROM best b JOIN users u ON u.id = b.user_id\n           )\n           SELECT user_id, peak AS \"peak!\", display_name, pos AS \"pos!\", n AS \"n!\"\n           FROM ranked WHERE n <= 100 OR user_id = $2\n           ORDER BY n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "casual_runs",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "peak!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "pos!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "fb69687a3ea6b694caf7e0f2a25bd75272f0b2eb8b11c337e8b1535dfdb85cfb"
+}

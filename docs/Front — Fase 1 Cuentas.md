@@ -1,6 +1,11 @@
 # Front — Fase 1: Cuentas
 
-**Versión del 2026-10-28 (revisión 2).** Cambios respecto de la revisión 1 (misma fecha):
+**Versión del 2026-10-28 (revisión 3).** Cambios respecto de la revisión 2 (misma fecha):
+
+- Casual ya existe: ver «Front — Fase 3 Casual.md». La tabla de estado y «Qué NO hacer» ya
+  no lo prohíben; Ranked sigue sin existir.
+
+Revisión 2 (2026-10-28):
 
 - **Vincular Google ahora pide la contraseña antes:** nuevo `POST /auth/google/link-intent`,
   y `start?link=1` sin ese paso vuelve con `reauth_required`. Ver la sección 10.
@@ -28,7 +33,8 @@ Este documento solo existe en `blackjack-backend/docs/`; el front lo enlaza y no
 | Vincular Google a una cuenta con contraseña | Listo | Listo |
 | Cerrar sesión en todos los dispositivos | Listo | Listo |
 | Pedir contraseña para vincular Google y desvincular | Listo | **Por hacer** (sección 10) |
-| Casual, Ranked, rankings y récords (fases 2–5) | No existe | **No hacer todavía** |
+| Casual, ranking semanal y récords (fases 2–3) | Listo | Ver «Front — Fase 3 Casual.md» |
+| Ranked y extras (fases 4–5) | No existe | **No hacer todavía** |
 
 El modo Práctica no cambia y sigue funcionando sin cuenta.
 
@@ -250,9 +256,8 @@ y llamar `POST /auth/google/unlink` con `{ password }`.
 - **No agregar pantallas sin endpoint:** recuperar o cambiar contraseña, crear contraseña en
   una cuenta de Google, borrar la cuenta y Facebook. Ninguna existe en el backend todavía.
 - **No guardar la contraseña** del diálogo de `link-intent` o `unlink` más allá de la llamada.
-- **No construir todavía Casual, Ranked, rankings, récords ni temporadas.** Los endpoints
-  `/casual/*`, `/ranked/*`, `/play/*` y `/me/records` de la especificación son de las
-  fases 2–4 y no existen.
+- **No construir todavía Ranked ni temporadas.** Los endpoints `/ranked/*` son de la fase 4
+  y no existen. Casual sí: ver «Front — Fase 3 Casual.md».
 - **No exigir cuenta para Práctica.** Sigue igual y sin login.
 - **No mostrar el email en nada público** (más adelante, rankings). Lo público es `displayName`.
 - **No editar `contract.ts` a mano** ni meter ahí los tipos de cuenta.
