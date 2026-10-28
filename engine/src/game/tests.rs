@@ -284,3 +284,43 @@ fn random_play_properties() {
         }
     }
 }
+
+#[test]
+fn analysis_request_is_what_the_player_sees() {
+    use crate::rank::Rank;
+    let r = |value: u8| Rank::new(value - 1).unwrap();
+    let rules = vegas();
+    let (mut round, mut shoe) = deal(&rules, &[Eight, Six, Eight, Ten, Three, Five]);
+    let req = round.analysis_request(&rules, &shoe, 0).unwrap();
+    assert_eq!(req.hand, [r(8), r(8)]);
+    assert_eq!(req.dealer_up, r(6));
+    assert_eq!(
+        req.shoe.iter().sum::<u16>(),
+        312 - 3,
+        "la oculta cuenta como no vista"
+    );
+    assert_eq!(req.split_hands_so_far, 0);
+    assert!(
+        !req.allowed.split && !req.allowed.double,
+        "sin saldo para otra unidad"
+    );
+
+    round.act(Action::Split, &mut shoe, &rules, PLENTY).unwrap();
+    let req = round.analysis_request(&rules, &shoe, PLENTY).unwrap();
+    assert_eq!(req.hand, [r(8), r(3)]);
+    assert_eq!(req.split_hands_so_far, 1);
+    assert!(!req.is_split_aces);
+    // Se ven 8 y 3, el 8 de la segunda mano y el 6 del dealer.
+    assert_eq!(req.shoe.iter().sum::<u16>(), 312 - 4);
+
+    let res = crate::analyze_hand(req).unwrap();
+    round.record_decision(Action::Hit, &res);
+    let d = &round.decisions[0];
+    assert_eq!((d.hand_index, d.chosen, d.best), (0, Action::Hit, res.best));
+    assert!(d.ev_best >= d.ev_chosen);
+
+    round.act(Action::Stand, &mut shoe, &rules, PLENTY).unwrap();
+    round.act(Action::Stand, &mut shoe, &rules, PLENTY).unwrap();
+    assert_eq!(round.phase, RoundPhase::Settled);
+    assert!(round.analysis_request(&rules, &shoe, PLENTY).is_none());
+}
