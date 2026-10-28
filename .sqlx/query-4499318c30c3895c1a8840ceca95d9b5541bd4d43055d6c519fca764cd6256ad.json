@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET display_name = $2, display_name_key = $3, display_name_set = true\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4499318c30c3895c1a8840ceca95d9b5541bd4d43055d6c519fca764cd6256ad"
+}

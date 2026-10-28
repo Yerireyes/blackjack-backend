@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod auth;
+pub mod google;
 pub mod sessions;
 
 use axum::extract::State;

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_sessions SET link_intent_until = NULL\n         WHERE id = $1 AND link_intent_until > now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7928163c014b1f59a6894c3e40901717140cf5d9d80a87ea9c21e313704126e6"
+}

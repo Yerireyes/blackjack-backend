@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use api::auth::JwtKeys;
 use api::config::Config;
 use api::state::AppState;
 use api::{app, RateLimits};
@@ -40,11 +39,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let state = AppState {
-        pool,
-        jwt: JwtKeys::new(&cfg.jwt_secret),
-        cookie_secure: cfg.cookie_secure,
-    };
+    // Borra cada hora las sesiones de login vencidas o revocadas.
+    let purge_pool = pool.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            every.tick().await;
+            match api::auth::purge_sessions(&purge_pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("sesiones vencidas borradas: {n}"),
+                Err(e) => tracing::warn!("no se pudieron borrar las sesiones vencidas: {e}"),
+            }
+        }
+    });
+
+    if cfg.google.is_none() {
+        tracing::info!(
+            "login con Google deshabilitado (faltan GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET)"
+        );
+    }
+    let state = AppState::new(pool, &cfg);
     let router = app(state, &cfg, &limits);
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!("API escuchando en http://{}/api/v1", cfg.bind_addr);

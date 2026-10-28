@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, created_at FROM users WHERE id = $1",
+  "query": "SELECT id, password_hash FROM users WHERE lower(email) = lower($1)",
   "describe": {
     "columns": [
       {
@@ -16,37 +16,25 @@
       },
       {
         "ordinal": 1,
-        "name": "email",
+        "name": "password_hash",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "email"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
-        "name": "created_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "created_at"
+            "name": "password_hash"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
       false,
-      false,
-      false
+      true
     ]
   },
-  "hash": "03d4046fa9ee0bfe000f789e5a744c5d1041ac7e23d65b22ff3000e3ebfd38c0"
+  "hash": "f0e4124936a403d6c2e177311f5c397583f11e7e5686d56f74ad91f4b10e28ac"
 }

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH s AS (\n               SELECT id, last_seen_at FROM auth_sessions\n               WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()\n           ), seen AS (\n               UPDATE auth_sessions SET last_seen_at = now()\n               WHERE id IN (SELECT id FROM s WHERE last_seen_at < now() - interval '5 minutes')\n           )\n           SELECT EXISTS (SELECT 1 FROM s) AS \"alive!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "alive!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "66010730db41d4cf270414d3d7eb24ad402de913d756546e5de1f6ba5837b700"
+}

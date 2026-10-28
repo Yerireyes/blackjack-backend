@@ -1,46 +1,113 @@
 //! Tests de punta a punta de la API contra PostgreSQL. Cada test recibe una base
 //! nueva con las migraciones aplicadas (`#[sqlx::test]`).
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use api::auth::JwtKeys;
-use api::config::Config;
+use api::config::{Config, GoogleConfig};
 use api::state::AppState;
 use api::{app, RateLimits};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{header, Request, StatusCode};
-use axum::Router;
+use axum::routing::post;
+use axum::{Form, Json, Router};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tower::ServiceExt;
+
+const FRONT: &str = "http://localhost:5180";
+const CLIENT_ID: &str = "cliente-de-prueba";
+const CLIENT_SECRET: &str = "secreto-de-prueba";
 
 fn config(analyze_burst: u32) -> Config {
     Config {
         database_url: String::new(),
         jwt_secret: b"secreto-de-prueba-con-al-menos-32-bytes".to_vec(),
         bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-        frontend_origin: "http://localhost:5173".into(),
+        frontend_origin: FRONT.into(),
         cookie_secure: false,
         analyze_replenish_ms: 60_000,
         analyze_burst,
+        auth_burst: 1000,
+        trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+        google: None,
     }
 }
 
 fn test_app(pool: PgPool, analyze_burst: u32) -> Router {
     let cfg = config(analyze_burst);
-    let state = AppState {
-        pool,
-        jwt: JwtKeys::new(&cfg.jwt_secret),
-        cookie_secure: false,
-    };
-    app(state, &cfg, &RateLimits::new(&cfg))
+    app(AppState::new(pool, &cfg), &cfg, &RateLimits::new(&cfg))
+}
+
+/// App con Google habilitado contra el servidor de tokens simulado.
+fn google_app(pool: PgPool, token_url: String) -> Router {
+    let mut cfg = config(10);
+    cfg.google = Some(GoogleConfig {
+        client_id: CLIENT_ID.into(),
+        client_secret: CLIENT_SECRET.into(),
+        redirect_uri: format!("{FRONT}/api/v1/auth/google/callback"),
+        auth_url: api::config::GOOGLE_AUTH_URL.into(),
+        token_url,
+    });
+    app(AppState::new(pool, &cfg), &cfg, &RateLimits::new(&cfg))
+}
+
+/// Endpoint de tokens de Google simulado. El `code` lleva la identidad que hay
+/// que devolver y el `code_challenge` que vio Google: `sub|email|verificado|challenge`.
+/// Comprueba PKCE y las credenciales del cliente como Google.
+async fn mock_google() -> String {
+    async fn token(Form(f): Form<HashMap<String, String>>) -> (StatusCode, Json<Value>) {
+        let invalid = (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid_grant" })),
+        );
+        let parts: Vec<&str> = f["code"].split('|').collect();
+        let [sub, email, verified, challenge] = parts[..] else {
+            return invalid;
+        };
+        let pkce = URL_SAFE_NO_PAD.encode(Sha256::digest(f["code_verifier"].as_bytes()));
+        if pkce != challenge
+            || f["client_id"] != CLIENT_ID
+            || f["client_secret"] != CLIENT_SECRET
+            || f["grant_type"] != "authorization_code"
+            || !f["redirect_uri"].ends_with("/api/v1/auth/google/callback")
+        {
+            return invalid;
+        }
+        let enc = |v: Value| URL_SAFE_NO_PAD.encode(v.to_string());
+        let claims = json!({
+            "iss": "https://accounts.google.com", "aud": CLIENT_ID,
+            "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 3600,
+            "sub": sub, "email": email, "email_verified": verified == "1",
+        });
+        let id_token = format!("{}.{}.firma", enc(json!({ "alg": "RS256" })), enc(claims));
+        (
+            StatusCode::OK,
+            Json(json!({ "access_token": "x", "id_token": id_token, "token_type": "Bearer" })),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/token", post(token)))
+            .await
+            .unwrap()
+    });
+    format!("http://{addr}/token")
 }
 
 struct Res {
     status: StatusCode,
+    /// "bj_session=<token>" si la respuesta la pone (o la borra).
     cookie: Option<String>,
+    /// Todas las cookies de Set-Cookie como "nombre=valor".
+    cookies: Vec<String>,
+    location: Option<String>,
     body: Value,
 }
 
@@ -62,17 +129,30 @@ async fn send(
         None => req.body(Body::empty()),
     }
     .unwrap();
+    send_from(app, req, SocketAddr::from(([127, 0, 0, 1], 40000))).await
+}
+
+/// Manda la petición como si llegara por TCP desde `peer`.
+async fn send_from(app: &Router, mut req: Request<Body>, peer: SocketAddr) -> Res {
     // Lo que pone axum::serve con into_make_service_with_connect_info (límite por IP).
-    let mut req = req;
-    req.extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
+    req.extensions_mut().insert(ConnectInfo(peer));
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    // "bj_session=<token>" de Set-Cookie, listo para mandarlo en Cookie.
-    let cookie = res
+    // "nombre=valor" de cada Set-Cookie, listo para mandarlo en Cookie.
+    let cookies: Vec<String> = res
         .headers()
-        .get(header::SET_COOKIE)
-        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string());
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+        .collect();
+    let cookie = cookies
+        .iter()
+        .find(|c| c.starts_with("bj_session="))
+        .cloned();
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .map(|v| v.to_str().unwrap().to_string());
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body = if bytes.is_empty() {
         Value::Null
@@ -82,6 +162,8 @@ async fn send(
     Res {
         status,
         cookie,
+        cookies,
+        location,
         body,
     }
 }
@@ -94,21 +176,122 @@ fn rules() -> Value {
     })
 }
 
-async fn register(app: &Router, email: &str) -> String {
-    let res = send(
+async fn register_named(app: &Router, email: &str, name: &str) -> Res {
+    send(
         app,
         "POST",
         "/api/v1/auth/register",
-        Some(json!({ "email": email, "password": "contraseña-segura" })),
+        Some(json!({ "email": email, "password": "contraseña-segura", "displayName": name })),
         None,
     )
-    .await;
+    .await
+}
+
+/// Registra con el nombre de la parte local del email y devuelve la cookie.
+async fn register(app: &Router, email: &str) -> String {
+    let res = register_named(app, email, email.split('@').next().unwrap()).await;
     assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
     res.cookie.expect("cookie de sesión")
 }
 
+/// Ida a Google como el navegador: devuelve la cookie `bj_oauth`, el `state` y el
+/// `code_challenge` de la redirección.
+async fn google_start(app: &Router, link: bool, session: Option<&str>) -> (String, String, String) {
+    let uri = if link {
+        "/api/v1/auth/google/start?link=1"
+    } else {
+        "/api/v1/auth/google/start"
+    };
+    let res = send(app, "GET", uri, None, session).await;
+    assert_eq!(res.status, StatusCode::SEE_OTHER);
+    let location = res.location.unwrap();
+    assert!(
+        location.starts_with(api::config::GOOGLE_AUTH_URL),
+        "{location}"
+    );
+    let q: HashMap<String, String> = reqwest::Url::parse(&location)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert_eq!(q["client_id"], CLIENT_ID);
+    assert_eq!(q["code_challenge_method"], "S256");
+    assert_eq!(q["scope"], "openid email profile");
+    let oauth = res
+        .cookies
+        .into_iter()
+        .find(|c| c.starts_with("bj_oauth=") && c.len() > "bj_oauth=".len())
+        .expect("cookie bj_oauth");
+    (oauth, q["state"].clone(), q["code_challenge"].clone())
+}
+
+/// Vuelta de Google al callback con las cookies dadas (separadas por "; ").
+async fn google_callback(app: &Router, params: &[(&str, &str)], cookies: &str) -> Res {
+    let url =
+        reqwest::Url::parse_with_params("http://x/api/v1/auth/google/callback", params).unwrap();
+    let uri = format!("{}?{}", url.path(), url.query().unwrap());
+    send(
+        app,
+        "GET",
+        &uri,
+        None,
+        Some(cookies).filter(|c| !c.is_empty()),
+    )
+    .await
+}
+
+/// `POST /auth/google/link-intent` con la contraseña de `register`.
+async fn link_intent(app: &Router, session: &str, password: &str) -> Res {
+    send(
+        app,
+        "POST",
+        "/api/v1/auth/google/link-intent",
+        Some(json!({ "password": password })),
+        Some(session),
+    )
+    .await
+}
+
+/// Flujo completo con la identidad `sub|email|verificado`. `start_session` y
+/// `callback_session` son la cookie de sesión al ir y al volver. Para vincular,
+/// primero confirma la contraseña (`link-intent`).
+async fn google_flow(
+    app: &Router,
+    link: bool,
+    start_session: Option<&str>,
+    callback_session: Option<&str>,
+    identity: &str,
+) -> Res {
+    if let (true, Some(session)) = (link, start_session) {
+        let res = link_intent(app, session, "contraseña-segura").await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.body);
+    }
+    let (oauth, state, challenge) = google_start(app, link, start_session).await;
+    let code = format!("{identity}|{challenge}");
+    let cookies = match callback_session {
+        Some(s) => format!("{oauth}; {s}"),
+        None => oauth,
+    };
+    google_callback(app, &[("code", &code), ("state", &state)], &cookies).await
+}
+
+/// La redirección al front (lo que sigue a "?").
+fn front_result(res: &Res) -> &str {
+    assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.body);
+    let location = res.location.as_deref().unwrap();
+    location
+        .strip_prefix(&format!("{FRONT}/?"))
+        .unwrap_or_else(|| panic!("redirección inesperada: {location}"))
+}
+
+async fn me(app: &Router, cookie: &str) -> Value {
+    let res = send(app, "GET", "/api/v1/auth/me", None, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    res.body
+}
+
 #[sqlx::test(migrations = "./migrations")]
-async fn health(pool: PgPool) {
+async fn analyze(pool: PgPool) {
     let app = test_app(pool, 10);
     let res = send(&app, "GET", "/api/v1/health", None, None).await;
     assert_eq!(res.status, StatusCode::OK);
@@ -178,6 +361,43 @@ async fn analyze_is_rate_limited_per_ip(pool: PgPool) {
     assert_eq!(res.body["code"], "rate_limited");
 }
 
+/// Detrás del reverse proxy, el límite va por la IP real aunque el cliente mande un
+/// `X-Forwarded-For` falso: el proxy agrega la IP real a la derecha.
+#[sqlx::test(migrations = "./migrations")]
+async fn rate_limit_uses_real_ip_behind_proxy(pool: PgPool) {
+    let app = test_app(pool, 1);
+    let proxy = SocketAddr::from(([127, 0, 0, 1], 40000));
+    let analyze = |xff: &str| {
+        let body = json!({ "version": 1, "rules": rules(), "shoe": [24, 24, 24, 24, 24, 23, 24, 24, 24, 96], "up": 5 });
+        Request::post("/api/v1/analyze/dealer")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", xff)
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    // La ráfaga es 1: la segunda petición de 203.0.113.9 se corta aunque cambie la IP falsa.
+    let res = send_from(&app, analyze("1.2.3.4, 203.0.113.9"), proxy).await;
+    assert_eq!(res.status, StatusCode::OK);
+    let res = send_from(&app, analyze("5.6.7.8, 203.0.113.9"), proxy).await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // Otro cliente detrás del mismo proxy tiene su propio límite...
+    let res = send_from(&app, analyze("203.0.113.10"), proxy).await;
+    assert_eq!(res.status, StatusCode::OK);
+
+    // ...y la IP falsa no se gastó: es otra clave.
+    let res = send_from(&app, analyze("1.2.3.4"), proxy).await;
+    assert_eq!(res.status, StatusCode::OK);
+
+    // Sin pasar por el proxy, la cabecera se ignora y cuenta la IP de la conexión.
+    let direct = SocketAddr::from(([198, 51, 100, 7], 5000));
+    let res = send_from(&app, analyze("203.0.113.11"), direct).await;
+    assert_eq!(res.status, StatusCode::OK);
+    let res = send_from(&app, analyze("203.0.113.12"), direct).await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn auth_flow(pool: PgPool) {
     let app = test_app(pool, 10);
@@ -185,21 +405,14 @@ async fn auth_flow(pool: PgPool) {
     assert!(cookie.starts_with("bj_session="));
 
     // Mismo email con otras mayúsculas → 409.
-    let res = send(
-        &app,
-        "POST",
-        "/api/v1/auth/register",
-        Some(json!({ "email": "ana@example.com", "password": "otra-contraseña" })),
-        None,
-    )
-    .await;
+    let res = register_named(&app, "ana@example.com", "Otra Ana").await;
     assert_eq!(res.status, StatusCode::CONFLICT);
     assert_eq!(res.body["code"], "email_taken");
 
     // Validaciones.
     for body in [
-        json!({ "email": "no-es-email", "password": "contraseña-segura" }),
-        json!({ "email": "b@example.com", "password": "corta" }),
+        json!({ "email": "no-es-email", "password": "contraseña-segura", "displayName": "Beto" }),
+        json!({ "email": "b@example.com", "password": "corta", "displayName": "Beto" }),
     ] {
         let res = send(&app, "POST", "/api/v1/auth/register", Some(body), None).await;
         assert_eq!(res.status, StatusCode::BAD_REQUEST);
@@ -244,6 +457,12 @@ async fn auth_flow(pool: PgPool) {
     assert_eq!(res.status, StatusCode::NO_CONTENT);
     assert_eq!(res.cookie.as_deref(), Some("bj_session="));
 
+    // El token copiado antes del logout ya no vale.
+    let res = send(&app, "GET", "/api/v1/auth/me", None, Some(&cookie)).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    let res = send(&app, "POST", "/api/v1/auth/logout", None, Some(&cookie)).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+
     let res = send(&app, "GET", "/api/v1/auth/me", None, None).await;
     assert_eq!(res.status, StatusCode::UNAUTHORIZED);
     let res = send(
@@ -255,6 +474,514 @@ async fn auth_flow(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+}
+
+async fn me_status(app: &Router, cookie: &str) -> StatusCode {
+    send(app, "GET", "/api/v1/auth/me", None, Some(cookie))
+        .await
+        .status
+}
+
+async fn login(app: &Router, email: &str) -> String {
+    let res = send(
+        app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({ "email": email, "password": "contraseña-segura" })),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK);
+    res.cookie.unwrap()
+}
+
+/// Cada login es una sesión aparte: cerrar una no toca las demás, y `logout-all`
+/// las cierra todas.
+#[sqlx::test(migrations = "./migrations")]
+async fn sessions_are_revocable(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let phone = register(&app, "ana@example.com").await;
+    let laptop = login(&app, "ana@example.com").await;
+    let tablet = login(&app, "ana@example.com").await;
+    let other_user = register_named(&app, "beto@example.com", "Beto")
+        .await
+        .cookie
+        .unwrap();
+
+    // Logout en el teléfono: las otras dos siguen.
+    let res = send(&app, "POST", "/api/v1/auth/logout", None, Some(&phone)).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    assert_eq!(me_status(&app, &phone).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(me_status(&app, &laptop).await, StatusCode::OK);
+
+    // logout-all desde la laptop: cierra también la tablet, no la de otro usuario.
+    let res = send(&app, "POST", "/api/v1/auth/logout-all", None, Some(&laptop)).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    assert_eq!(res.cookie.as_deref(), Some("bj_session="));
+    for cookie in [&laptop, &tablet] {
+        assert_eq!(me_status(&app, cookie).await, StatusCode::UNAUTHORIZED);
+        let res = send(
+            &app,
+            "PATCH",
+            "/api/v1/me",
+            Some(json!({ "displayName": "Ana Robada" })),
+            Some(cookie),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(me_status(&app, &other_user).await, StatusCode::OK);
+
+    // Volver a entrar funciona.
+    let again = login(&app, "ana@example.com").await;
+    assert_eq!(me_status(&app, &again).await, StatusCode::OK);
+
+    // La limpieza borra las revocadas hace más de un día y deja las vivas.
+    sqlx::query("UPDATE auth_sessions SET revoked_at = now() - interval '2 days' WHERE revoked_at IS NOT NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(api::auth::purge_sessions(&pool).await.unwrap(), 3);
+    assert_eq!(me_status(&app, &again).await, StatusCode::OK);
+    assert_eq!(me_status(&app, &other_user).await, StatusCode::OK);
+}
+
+/// Un JWT bien firmado pero sin fila en `auth_sessions` (por ejemplo, uno emitido
+/// antes de las sesiones revocables) no vale.
+#[sqlx::test(migrations = "./migrations")]
+async fn token_without_session_row_is_rejected(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let cookie = register(&app, "ana@example.com").await;
+    sqlx::query("DELETE FROM auth_sessions")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(me_status(&app, &cookie).await, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn display_names(pool: PgPool) {
+    let app = test_app(pool, 10);
+
+    // "José" con la tilde como carácter combinado se guarda en NFC.
+    let res = register_named(&app, "jose@example.com", "  Jose\u{301} ").await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    assert_eq!(res.body["displayName"], "José");
+    assert_eq!(res.body["needsDisplayName"], false);
+    assert_eq!(res.body["hasPassword"], true);
+    assert_eq!(res.body["providers"], json!([]));
+    let jose = res.cookie.unwrap();
+
+    // /auth/me devuelve exactamente estos campos: nunca el hash.
+    let body = me(&app, &jose).await;
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "createdAt",
+            "displayName",
+            "email",
+            "hasPassword",
+            "id",
+            "needsDisplayName",
+            "providers"
+        ]
+    );
+
+    // Duplicado sin distinguir mayúsculas (también con tildes) → 409.
+    let res = register_named(&app, "otro@example.com", "JOSÉ").await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "display_name_taken");
+
+    for bad in [
+        "ab",
+        "dos  espacios",
+        "\u{410}dmin",
+        "Admín",
+        "c-a s_a",
+        "con.punto",
+    ] {
+        let res = register_named(&app, "otro@example.com", bad).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad:?}");
+        assert_eq!(res.body["code"], "display_name_invalid", "{bad:?}");
+    }
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/auth/register",
+        Some(json!({ "email": "otro@example.com", "password": "contraseña-segura" })),
+        None,
+    )
+    .await;
+    assert_eq!(res.body["code"], "invalid_json");
+
+    // PATCH /me.
+    let res = send(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(json!({ "displayName": "Nadie" })),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    let beto = register(&app, "beto@example.com").await;
+    let res = send(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(json!({ "displayName": "josé" })),
+        Some(&beto),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "display_name_taken");
+    let res = send(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(json!({ "displayName": "admin" })),
+        Some(&beto),
+    )
+    .await;
+    assert_eq!(res.body["code"], "display_name_invalid");
+    let res = send(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(json!({ "displayName": "Beto Pérez" })),
+        Some(&beto),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["displayName"], "Beto Pérez");
+    // Cambiar solo las mayúsculas del propio nombre está permitido.
+    let res = send(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(json!({ "displayName": "BETO PÉREZ" })),
+        Some(&beto),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn google_disabled_without_credentials(pool: PgPool) {
+    let app = test_app(pool, 10);
+    let res = send(&app, "GET", "/api/v1/auth/providers", None, None).await;
+    assert_eq!(res.body, json!({ "google": false }));
+    for (uri, expected) in [
+        (
+            "/api/v1/auth/google/start",
+            "login=error&code=google_disabled",
+        ),
+        (
+            "/api/v1/auth/google/start?link=1",
+            "link=error&code=google_disabled",
+        ),
+        (
+            "/api/v1/auth/google/callback?code=x&state=y",
+            "login=error&code=google_disabled",
+        ),
+    ] {
+        let res = send(&app, "GET", uri, None, None).await;
+        assert_eq!(front_result(&res), expected, "{uri}");
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn google_state_and_pkce(pool: PgPool) {
+    let app = google_app(pool, mock_google().await);
+    let res = send(&app, "GET", "/api/v1/auth/providers", None, None).await;
+    assert_eq!(res.body, json!({ "google": true }));
+
+    // `state` distinto al de la cookie → error, y la cookie se borra.
+    let (oauth, _, challenge) = google_start(&app, false, None).await;
+    let code = format!("g1|a@example.com|1|{challenge}");
+    let res = google_callback(&app, &[("code", &code), ("state", "otro")], &oauth).await;
+    assert_eq!(front_result(&res), "login=error&code=invalid_state");
+    assert!(res.cookies.iter().any(|c| c == "bj_oauth="));
+    assert!(res.cookie.is_none());
+
+    // Sin la cookie de `start` → error.
+    let (_, state, challenge) = google_start(&app, false, None).await;
+    let code = format!("g1|a@example.com|1|{challenge}");
+    let res = google_callback(&app, &[("code", &code), ("state", &state)], "").await;
+    assert_eq!(front_result(&res), "login=error&code=invalid_state");
+
+    // Cookie alterada (no se puede descifrar) → error.
+    let (oauth, state, challenge) = google_start(&app, false, None).await;
+    let code = format!("g1|a@example.com|1|{challenge}");
+    let res = google_callback(
+        &app,
+        &[("code", &code), ("state", &state)],
+        &format!("{oauth}x"),
+    )
+    .await;
+    assert_eq!(front_result(&res), "login=error&code=invalid_state");
+
+    // El usuario cancela en Google.
+    let (oauth, state, _) = google_start(&app, false, None).await;
+    let res = google_callback(
+        &app,
+        &[("error", "access_denied"), ("state", &state)],
+        &oauth,
+    )
+    .await;
+    assert_eq!(front_result(&res), "login=error&code=cancelled");
+
+    // `code_verifier` que no corresponde al `code_challenge` → Google lo rechaza.
+    let (oauth, state, _) = google_start(&app, false, None).await;
+    let code = "g1|a@example.com|1|otro-challenge";
+    let res = google_callback(&app, &[("code", code), ("state", &state)], &oauth).await;
+    assert_eq!(front_result(&res), "login=error&code=google_error");
+    assert!(res.cookie.is_none());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn google_login_creates_account_with_provisional_name(pool: PgPool) {
+    let app = google_app(pool, mock_google().await);
+
+    let res = google_flow(&app, false, None, None, "g1|nuevo@example.com|1").await;
+    assert_eq!(front_result(&res), "login=ok");
+    let cookie = res.cookie.expect("cookie de sesión");
+    let body = me(&app, &cookie).await;
+    assert_eq!(body["email"], "nuevo@example.com");
+    assert_eq!(body["needsDisplayName"], true);
+    assert_eq!(body["hasPassword"], false);
+    assert_eq!(body["providers"], json!(["google"]));
+    assert!(body["displayName"].as_str().unwrap().starts_with("Jugador"));
+    let id = body["id"].clone();
+
+    // Sin contraseña: el login por contraseña da el error genérico.
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({ "email": "nuevo@example.com", "password": "cualquiera" })),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(res.body["code"], "invalid_credentials");
+
+    // Elegir nombre confirma el provisional.
+    let res = send(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(json!({ "displayName": "Nuevo" })),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.body["needsDisplayName"], false);
+
+    // Volver a entrar con la misma identidad (aunque cambie el email) → misma cuenta.
+    let res = google_flow(&app, false, None, None, "g1|otro-email@example.com|1").await;
+    assert_eq!(front_result(&res), "login=ok");
+    assert_eq!(me(&app, &res.cookie.unwrap()).await["id"], id);
+
+    // Email sin verificar → no se crea la cuenta.
+    let res = google_flow(&app, false, None, None, "g2|sin-verificar@example.com|0").await;
+    assert_eq!(front_result(&res), "login=error&code=email_unverified");
+    assert!(res.cookie.is_none());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn google_links_existing_accounts_only_explicitly(pool: PgPool) {
+    let app = google_app(pool, mock_google().await);
+    let ana = register(&app, "ana@example.com").await;
+    let ana_id = me(&app, &ana).await["id"].clone();
+
+    // Google con el email de una cuenta existente (aunque esté verificado) no se
+    // vincula solo: el email de la cuenta con contraseña nunca se verificó.
+    let res = google_flow(&app, false, None, None, "g-ana|ANA@example.com|1").await;
+    assert_eq!(front_result(&res), "login=error&code=account_exists");
+    assert!(res.cookie.is_none());
+    assert_eq!(me(&app, &ana).await["providers"], json!([]));
+
+    // Vincular sin sesión → error.
+    let res = send(&app, "GET", "/api/v1/auth/google/start?link=1", None, None).await;
+    assert_eq!(front_result(&res), "link=error&code=unauthorized");
+
+    // Si la sesión cambia entre la ida y la vuelta → error.
+    let beto = register(&app, "beto@example.com").await;
+    let res = google_flow(&app, true, Some(&ana), Some(&beto), "g-ana|ana@gmail.com|1").await;
+    assert_eq!(front_result(&res), "link=error&code=unauthorized");
+
+    // Vinculación explícita desde la cuenta de Ana.
+    let res = google_flow(&app, true, Some(&ana), Some(&ana), "g-ana|ana@gmail.com|1").await;
+    assert_eq!(front_result(&res), "link=ok");
+    assert!(res.cookie.is_none(), "la sesión no cambia");
+    let body = me(&app, &ana).await;
+    assert_eq!(body["providers"], json!(["google"]));
+    assert_eq!(body["hasPassword"], true);
+
+    // Desde ahora Google entra en la cuenta de Ana.
+    let res = google_flow(&app, false, None, None, "g-ana|ana@gmail.com|1").await;
+    assert_eq!(front_result(&res), "login=ok");
+    assert_eq!(me(&app, &res.cookie.unwrap()).await["id"], ana_id);
+
+    // Con Google ya vinculado, link-intent lo dice antes de ir a Google.
+    let res = link_intent(&app, &ana, "contraseña-segura").await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "already_linked");
+
+    // La identidad de Ana no se puede vincular a otra cuenta.
+    let res = google_flow(
+        &app,
+        true,
+        Some(&beto),
+        Some(&beto),
+        "g-ana|ana@gmail.com|1",
+    )
+    .await;
+    assert_eq!(front_result(&res), "link=error&code=identity_in_use");
+    assert_eq!(me(&app, &beto).await["providers"], json!([]));
+}
+
+/// Vincular exige confirmar la contraseña justo antes: un token de sesión solo no basta.
+#[sqlx::test(migrations = "./migrations")]
+async fn google_link_requires_password(pool: PgPool) {
+    let app = google_app(pool.clone(), mock_google().await);
+    let ana = register(&app, "ana@example.com").await;
+
+    // Sin link-intent → reauth_required, sin pasar por Google.
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/auth/google/start?link=1",
+        None,
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(front_result(&res), "link=error&code=reauth_required");
+
+    // Contraseña incorrecta → 403 (no 401: la sesión sigue viva).
+    let res = link_intent(&app, &ana, "incorrecta").await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    assert_eq!(res.body["code"], "invalid_password");
+    assert_eq!(me_status(&app, &ana).await, StatusCode::OK);
+
+    // La prueba es de un solo uso: si cancela en Google, hay que pedirla de nuevo.
+    let res = link_intent(&app, &ana, "contraseña-segura").await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let (oauth, state, _) = google_start(&app, true, Some(&ana)).await;
+    let res = google_callback(
+        &app,
+        &[("error", "access_denied"), ("state", &state)],
+        &format!("{oauth}; {ana}"),
+    )
+    .await;
+    assert_eq!(front_result(&res), "link=error&code=cancelled");
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/auth/google/start?link=1",
+        None,
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(front_result(&res), "link=error&code=reauth_required");
+
+    // Es de la sesión que la pidió, no de las demás sesiones del usuario.
+    let laptop = login(&app, "ana@example.com").await;
+    let res = link_intent(&app, &ana, "contraseña-segura").await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/auth/google/start?link=1",
+        None,
+        Some(&laptop),
+    )
+    .await;
+    assert_eq!(front_result(&res), "link=error&code=reauth_required");
+
+    // Vencida → reauth_required.
+    sqlx::query("UPDATE auth_sessions SET link_intent_until = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/auth/google/start?link=1",
+        None,
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(front_result(&res), "link=error&code=reauth_required");
+
+    // Cuenta creada con Google: no tiene contraseña que confirmar.
+    let res = google_flow(&app, false, None, None, "g1|nuevo@example.com|1").await;
+    let nuevo = res.cookie.unwrap();
+    let res = link_intent(&app, &nuevo, "cualquiera").await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "no_password");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn google_unlink(pool: PgPool) {
+    let app = google_app(pool, mock_google().await);
+    let ana = register(&app, "ana@example.com").await;
+    let unlink = |session: String, password: &'static str| {
+        let app = app.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                "/api/v1/auth/google/unlink",
+                Some(json!({ "password": password })),
+                Some(&session),
+            )
+            .await
+        }
+    };
+
+    // Sin Google vinculado → 409 not_linked.
+    let res = unlink(ana.clone(), "contraseña-segura").await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "not_linked");
+
+    let res = google_flow(&app, true, Some(&ana), Some(&ana), "g-ana|ana@gmail.com|1").await;
+    assert_eq!(front_result(&res), "link=ok");
+    // Alguien entra con ese Google (otra sesión de la misma cuenta).
+    let res = google_flow(&app, false, None, None, "g-ana|ana@gmail.com|1").await;
+    let via_google = res.cookie.unwrap();
+
+    // Contraseña incorrecta → 403 y nada cambia.
+    let res = unlink(ana.clone(), "incorrecta").await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    assert_eq!(res.body["code"], "invalid_password");
+    assert_eq!(me(&app, &ana).await["providers"], json!(["google"]));
+
+    // Desvincular devuelve el Me y revoca las demás sesiones, no la actual.
+    let res = unlink(ana.clone(), "contraseña-segura").await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert_eq!(res.body["providers"], json!([]));
+    assert_eq!(me_status(&app, &ana).await, StatusCode::OK);
+    assert_eq!(me_status(&app, &via_google).await, StatusCode::UNAUTHORIZED);
+
+    // Ese Google ya no entra en la cuenta de Ana: crearía otra (el email es distinto).
+    let res = google_flow(&app, false, None, None, "g-ana|ana@gmail.com|1").await;
+    assert_eq!(front_result(&res), "login=ok");
+    let otra = res.cookie.unwrap();
+    assert_ne!(me(&app, &otra).await["id"], me(&app, &ana).await["id"]);
+
+    // Una cuenta sin contraseña no puede desvincular su único acceso.
+    let res = unlink(otra.clone(), "cualquiera").await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "no_password");
+    assert_eq!(me(&app, &otra).await["providers"], json!(["google"]));
 }
 
 #[sqlx::test(migrations = "./migrations")]
