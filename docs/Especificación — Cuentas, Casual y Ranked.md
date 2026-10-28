@@ -298,7 +298,7 @@ casual_runs      id, user_id, rules jsonb, shoe jsonb, balance, peak, hands, sta
 seasons          id, starts_at, ends_at, closed_at
 ranked_accounts  (user_id, season_id) PK, shoe jsonb, balance, refilled_total, last_refill_at,
                  hands, peak
-ranked_refills   id, user_id, season_id, amount, at
+ranked_refills   id, account_id (= usuario + temporada), amount, at
 season_results   season_id, user_id, rank, net, hands, medal
 rounds           id, user_id, kind (casual|ranked), context_id, bet, state jsonb, status
                  (active|settled), net, created_at, settled_at
@@ -374,9 +374,9 @@ interface ReviewItem { handIndex: number; chosen: Action; best: Action; evChosen
 Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
 `round_active`, `no_active_round`, `bet_out_of_range`, `insufficient_funds`,
 `action_not_allowed`, `run_finished`, `refill_pending`, `display_name_taken`,
-`display_name_invalid`. Añadidos al implementar Casual: `run_active`, `no_active_run`,
-`display_name_required` y `not_available` (Ranked antes de la fase 4). El detalle por
-endpoint está en «Front — Fase 3 Casual.md».
+`display_name_invalid`. Añadidos al implementar Casual: `run_active`, `no_active_run` y
+`display_name_required` (`not_available` dejó de existir con la fase 4). El detalle por
+endpoint está en «Front — Fase 3 Casual.md» y «Front — Fase 4 Ranked.md».
 
 ---
 
@@ -395,10 +395,10 @@ endpoint está en «Front — Fase 3 Casual.md».
 3. **Casual (hecha).** Tablas, endpoints de 7.1, récords y ranking semanal. *Tests:* dos rondas activas
    → 409; misma `idempotencyKey` → misma respuesta y un solo descuento; retirarse con una ronda
    activa → 409; con saldo < 10 la partida queda `busted`. Decisiones en 8.1.
-4. **Ranked.** Temporadas, piso, recarga cada 24 h, apuesta máxima relativa, ganancia neta,
+4. **Ranked (hecha).** Temporadas, piso, recarga cada 24 h, apuesta máxima relativa, ganancia neta,
    mínimo de manos, revisión. *Tests:* recarga solo una vez en 24 h; `max_bet` según la
    fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
-   `review` coincide con `analyze_hand` para el mismo estado.
+   `review` coincide con `analyze_hand` para el mismo estado. Decisiones en 8.2.
 5. **Extras.** Reto diario, logros, cosméticos y Facebook.
 
 ### 8.1 Cómo quedaron las fases 2 y 3
@@ -422,7 +422,6 @@ El neto en fichas es `round(neto × apuesta)` como `Math.round` de JavaScript.
 - **Nombre obligatorio.** `POST /casual/runs` responde 409 `display_name_required` si el
   nombre sigue siendo provisional: el nombre sale en el ranking.
 - **`contextId` opcional** en `POST /play/rounds`: sin él se usa la partida activa.
-- **Ranked** responde 501 `not_available` hasta la fase 4.
 - **Ranking semanal:** el mejor pico por usuario entre las partidas **empezadas** esa semana
   (desde el lunes 00:00 UTC). Es público: sin sesión se ve sin la fila propia.
 - **Límite de tasa por usuario** en `POST /casual/runs`, `/casual/runs/{id}/retire`,
@@ -433,10 +432,51 @@ El neto en fichas es `round(neto × apuesta)` como `Math.round` de JavaScript.
 
 **Pendiente de Casual:**
 
-- Récord «mejor racha de decisiones óptimas»: necesita evaluar cada decisión en el servidor,
-  que llega con la revisión de Ranked.
-- Cierre automático de rondas sin acciones durante 24 h (3.3, *ajustable*). Hoy la ronda
-  queda activa hasta que el usuario vuelve; `GET /play/active` la devuelve.
+- Récord «mejor racha de decisiones óptimas»: la evaluación por decisión ya existe (8.2),
+  pero en Casual no se calcula para no gastar 55–300 ms de CPU en cada acción. Se puede
+  activar si el récord lo justifica.
+- ~~Cierre automático de rondas sin acciones durante 24 h~~: hecho en la fase 4 (8.2).
+
+### 8.2 Cómo quedó la fase 4 (Ranked)
+
+Migración `api/migrations/20261030000001_ranked.sql`; rutas en `api/src/routes/ranked.rs`
+y `api/src/routes/play.rs`.
+
+- **Temporadas.** Id `"AAAA-MM"` (UTC). La fila se crea la primera vez que alguien usa la
+  temporada. La cuenta del usuario (`ranked_accounts`, una por temporada) se crea con 500
+  en `GET /ranked/me` o en el primer reparto; su `id` es el `contextId` de las rondas.
+- **Reparto.** `POST /play/rounds` con `kind: "ranked"` siempre usa la cuenta de la
+  temporada actual (`contextId` se ignora) y exige nombre elegido (`display_name_required`,
+  como Casual: el nombre sale en el ranking). Reglas de Las Vegas en código.
+- **Piso y recarga.** Al liquidar, si el saldo queda bajo 100 y nunca se recargó o pasaron
+  24 h, se recarga hasta 100 (`result.refilled`). Si no se puede, se sigue con lo que hay y
+  `wallet.refillAvailableAt` dice cuándo. La recarga pendiente también se aplica sola al
+  volver (`GET /ranked/me` o el siguiente reparto). Con menos de 10 y sin recarga
+  disponible, repartir da 409 `refill_pending`. Cada recarga queda en `ranked_refills`.
+- **Ganancia neta.** Columna generada `net = balance − 500 − refilled_total`, indexada por
+  temporada.
+- **Apuesta.** De 10 a `maxBet = clamp(⌊0,25 × saldo / 10⌋ × 10, 10, 500)`, múltiplo de 10;
+  fuera de eso, 400 `bet_out_of_range`. Doblar y dividir siguen exigiendo saldo para otra
+  unidad, como en Casual.
+- **Sin ayudas.** `RoundView` de Ranked no trae `shoeCounts`.
+- **Revisión.** Antes de aplicar cada acción, el servidor llama a `analyze_hand` en
+  `spawn_blocking` (límite de 5 s) con las cartas del jugador, la visible del dealer y lo no
+  visto (oculta incluida), y guarda el `ReviewItem` en `rounds.state.decisions`. Si el
+  cálculo falla, la acción sigue y esa decisión queda sin revisar. Al liquidar,
+  `result.review` trae todas. El reparto no tiene decisiones (un blackjack o un peek dan
+  `review: []`).
+- **Ranking** (`GET /ranked/leaderboard?season=`). Top 100 por `net` entre quienes tienen
+  200 manos o más; empates comparten posición. `me` trae la fila del usuario; si no llega a
+  200 manos, `provisional: true` y `rank` es la posición que tendría. Público; sin `season`
+  es la actual; una temporada que no existe da 404.
+- **Cierre de temporada.** Una tarea horaria (`play::housekeeping`) cierra las temporadas
+  terminadas que no tengan rondas en juego: guarda en `season_results` la posición, la
+  ganancia y las manos de quienes tienen el mínimo, con medalla `gold`, `silver`, `bronze`
+  (posiciones 1–3, los empates comparten) o `top10` (posición ≤ ⌈10 % de los clasificados⌉).
+  `GET /me/records` devuelve `ranked.seasons` y `bestRank`.
+- **Rondas abandonadas.** La misma tarea cierra las rondas (Casual o Ranked) sin acciones
+  durante 24 h, plantándose en las manos pendientes. Esas decisiones automáticas no se
+  revisan. Así una temporada nunca queda abierta para siempre por una ronda olvidada.
 
 ---
 
@@ -447,7 +487,8 @@ El neto en fichas es `round(neto × apuesta)` como `Math.round` de JavaScript.
       fase 5).
 - [x] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
 - [x] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
-- [ ] Rankings sin emails; `display_name` validado y con lista de reservados.
+- [x] Rankings sin emails; `display_name` validado y con lista de reservados.
+- [x] Ranked sin ayudas durante la mano (sin `shoeCounts`; test).
 - [x] OAuth: `state` + PKCE, cookie temporal cifrada, intercambio del código solo en el
       servidor, nunca vincular por email automáticamente (solo de forma explícita con
       sesión) y crear cuentas solo con email verificado.
