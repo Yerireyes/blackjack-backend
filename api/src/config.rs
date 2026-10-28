@@ -17,6 +17,9 @@ pub struct Config {
     /// Ráfaga del límite por IP de las rutas de cuenta (registro, login, Google,
     /// `PATCH /me`); después, una petición cada 6 s.
     pub auth_burst: u32,
+    /// Ráfaga del límite por usuario de las acciones de juego (`/play/*`, crear y
+    /// cerrar partidas); después, 5 por segundo.
+    pub play_burst: u32,
     /// Proxies cuyo `X-Forwarded-For` se acepta para saber la IP del cliente
     /// (`TRUSTED_PROXIES`, separadas por comas; por defecto solo local).
     pub trusted_proxies: Vec<IpAddr>,
@@ -113,6 +116,7 @@ impl Config {
             analyze_replenish_ms: var_or("ANALYZE_REPLENISH_MS", 200)?,
             analyze_burst: var_or("ANALYZE_BURST", 20)?,
             auth_burst: var_or("AUTH_BURST", 10)?,
+            play_burst: var_or("PLAY_BURST", 10)?,
             trusted_proxies: trusted_proxies()?,
             google: GoogleConfig::from_env()?,
         })

@@ -34,6 +34,7 @@ fn config(analyze_burst: u32) -> Config {
         analyze_replenish_ms: 60_000,
         analyze_burst,
         auth_burst: 1000,
+        play_burst: 1000,
         trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
         google: None,
     }
@@ -1126,4 +1127,463 @@ async fn sessions_hands_and_stats(pool: PgPool) {
     .await;
     assert_eq!(res.status, StatusCode::BAD_REQUEST);
     assert_eq!(res.body["code"], "invalid_path");
+}
+
+// ---- Casual ----
+
+use engine::game::{Face, GameShoe};
+
+/// Crea una partida casual con el preset y devuelve su id.
+async fn new_run(app: &Router, cookie: &str, preset: &str) -> String {
+    let res = send(
+        app,
+        "POST",
+        "/api/v1/casual/runs",
+        Some(json!({ "preset": preset })),
+        Some(cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    res.body["id"].as_str().unwrap().to_string()
+}
+
+/// Pone estas cartas arriba del zapato de la partida (como `stack` del front).
+async fn stack(pool: &PgPool, run: &str, decks: u8, top: &[Face]) {
+    let shoe = serde_json::to_value(GameShoe::stacked(decks, top)).unwrap();
+    sqlx::query("UPDATE casual_runs SET shoe = $2 WHERE id = $1::uuid")
+        .bind(run)
+        .bind(shoe)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn set_balance(pool: &PgPool, run: &str, balance: i64) {
+    sqlx::query("UPDATE casual_runs SET balance = $2 WHERE id = $1::uuid")
+        .bind(run)
+        .bind(balance)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+fn key() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+async fn deal_round(app: &Router, cookie: &str, bet: i64, key: &str) -> Res {
+    send(
+        app,
+        "POST",
+        "/api/v1/play/rounds",
+        Some(json!({ "kind": "casual", "bet": bet, "idempotencyKey": key })),
+        Some(cookie),
+    )
+    .await
+}
+
+async fn act(app: &Router, cookie: &str, round: &str, action: &str, key: &str) -> Res {
+    send(
+        app,
+        "POST",
+        &format!("/api/v1/play/rounds/{round}/actions"),
+        Some(json!({ "action": action, "idempotencyKey": key })),
+        Some(cookie),
+    )
+    .await
+}
+
+fn shoe_total(view: &Value) -> u64 {
+    view["shoeCounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum()
+}
+
+async fn post_run(app: &Router, cookie: Option<&str>, body: Value) -> Res {
+    send(app, "POST", "/api/v1/casual/runs", Some(body), cookie).await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn casual_runs(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+
+    // Sin sesión → 401; preset y reglas a la vez (o ninguno) → 400.
+    let res = post_run(&app, None, json!({ "preset": "vegas" })).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    for body in [json!({}), json!({ "preset": "vegas", "rules": rules() })] {
+        let res = post_run(&app, Some(&ana), body).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    }
+    let res = send(&app, "GET", "/api/v1/casual/runs/active", None, Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+    assert_eq!(res.body["code"], "no_active_run");
+
+    let res = post_run(&app, Some(&ana), json!({ "preset": "sixToFive" })).await;
+    assert_eq!(res.status, StatusCode::CREATED);
+    assert_eq!(res.body["balance"], 500);
+    assert_eq!(res.body["peak"], 500);
+    assert_eq!(res.body["maxBet"], 500);
+    assert_eq!(res.body["status"], "active");
+    assert_eq!(res.body["preset"], "sixToFive");
+    assert_eq!(res.body["rules"]["blackjackPays"], 1.2);
+    assert!(
+        res.body.get("shoe").is_none(),
+        "el zapato nunca sale del servidor"
+    );
+    let run = res.body["id"].as_str().unwrap().to_string();
+
+    // Una sola partida activa.
+    let res = post_run(&app, Some(&ana), json!({ "preset": "vegas" })).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "run_active");
+    let res = send(&app, "GET", "/api/v1/casual/runs/active", None, Some(&ana)).await;
+    assert_eq!(res.body["id"], run.as_str());
+
+    // Retirarse cierra la partida y no se reabre.
+    let uri = format!("/api/v1/casual/runs/{run}/retire");
+    let res = send(&app, "POST", &uri, None, Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert_eq!(res.body["status"], "retired");
+    assert_eq!(res.body["maxBet"], 0);
+    assert!(res.body["endedAt"].is_string());
+    let res = send(&app, "POST", &uri, None, Some(&ana)).await;
+    assert_eq!(res.body["code"], "run_finished");
+
+    // Reglas personalizadas inválidas → 422 del motor; válidas → sin preset.
+    let mut bad = rules();
+    bad["decks"] = json!(0);
+    let res = post_run(&app, Some(&ana), json!({ "rules": bad })).await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let res = post_run(&app, Some(&ana), json!({ "rules": rules() })).await;
+    assert_eq!(res.status, StatusCode::CREATED);
+    assert!(res.body.get("preset").is_none());
+
+    // Otro usuario no cierra la partida de Ana.
+    let beto = register(&app, "beto@example.com").await;
+    let res = send(&app, "POST", &uri, None, Some(&beto)).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    // Con el nombre provisional no se juega (el nombre sale en los rankings).
+    sqlx::query("UPDATE users SET display_name_set = false WHERE email = 'beto@example.com'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = post_run(&app, Some(&beto), json!({ "preset": "vegas" })).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "display_name_required");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn casual_round_flow(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let run = new_run(&app, &ana, "vegas").await;
+
+    // Jugador 10,8; dealer 6 + oculta 10 = 16 → pide un 5 → 21.
+    stack(&pool, &run, 6, &[Ten, Six, Eight, Ten, Five]).await;
+    let res = deal_round(&app, &ana, 50, &key()).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    let view = res.body;
+    let round = view["id"].as_str().unwrap().to_string();
+    assert_eq!(view["kind"], "casual");
+    assert_eq!(view["contextId"], run.as_str());
+    assert_eq!(view["phase"], "player");
+    assert_eq!(view["bet"], 50);
+    assert_eq!(view["player"]["hands"][0]["cards"][0]["rank"], "10");
+    assert_eq!(view["dealer"]["up"]["rank"], "6");
+    assert_eq!(view["dealer"]["hole"], Value::Null, "la oculta no se ve");
+    assert_eq!(
+        view["allowed"],
+        json!({ "hit": true, "stand": true, "double": true, "split": false, "surrender": true })
+    );
+    assert_eq!(view["peekBlackjack"], false);
+    assert_eq!(view["wallet"], json!({ "balance": 500, "maxBet": 500 }));
+    // 312 − 3 visibles: la oculta cuenta como no vista.
+    assert_eq!(shoe_total(&view), 309);
+    assert!(view.get("result").is_none());
+
+    // Una sola ronda activa; no se puede retirar con ella en juego.
+    let res = deal_round(&app, &ana, 10, &key()).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "round_active");
+    let uri = format!("/api/v1/casual/runs/{run}/retire");
+    let res = send(&app, "POST", &uri, None, Some(&ana)).await;
+    assert_eq!(res.body["code"], "round_active");
+
+    // Retomar tras desconectarse.
+    let res = send(&app, "GET", "/api/v1/play/active", None, Some(&ana)).await;
+    assert_eq!(res.body, view);
+
+    // Acción no permitida (no es un par) → 409.
+    let res = act(&app, &ana, &round, "split", &key()).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "action_not_allowed");
+
+    // Otro usuario no puede actuar en la ronda de Ana.
+    let beto = register(&app, "beto@example.com").await;
+    let res = act(&app, &beto, &round, "stand", &key()).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    let res = act(&app, &ana, &round, "stand", &key()).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let settled = res.body;
+    assert_eq!(settled["phase"], "settled");
+    assert_eq!(settled["dealer"]["hole"]["rank"], "10");
+    assert_eq!(settled["dealer"]["hits"][0]["rank"], "5");
+    assert_eq!(settled["player"]["hands"][0]["outcome"], "lose");
+    assert_eq!(settled["player"]["hands"][0]["net"], -50);
+    assert_eq!(settled["result"]["net"], -50);
+    assert_eq!(settled["wallet"]["balance"], 450);
+    assert_eq!(settled["allowed"]["stand"], false);
+    assert_eq!(shoe_total(&settled), 312 - 5);
+
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(res.body["code"], "no_active_round");
+    let res = send(&app, "GET", "/api/v1/play/active", None, Some(&ana)).await;
+    assert_eq!(res.body["code"], "no_active_round");
+    let res = send(&app, "GET", "/api/v1/casual/runs/active", None, Some(&ana)).await;
+    assert_eq!(res.body["balance"], 450);
+    assert_eq!(res.body["hands"], 1);
+    assert_eq!(res.body["peak"], 500);
+
+    // Peek con blackjack del dealer: la ronda termina en el reparto.
+    stack(&pool, &run, 6, &[Ten, Ace, Seven, K]).await;
+    let res = deal_round(&app, &ana, 100, &key()).await;
+    assert_eq!(res.body["phase"], "settled");
+    assert_eq!(res.body["peekBlackjack"], true);
+    assert_eq!(res.body["dealer"]["hole"]["rank"], "K");
+    assert_eq!(res.body["result"]["net"], -100);
+    assert_eq!(res.body["wallet"]["balance"], 350);
+
+    // Blackjack del jugador paga 3:2.
+    stack(&pool, &run, 6, &[Ace, Nine, K, Seven]).await;
+    let res = deal_round(&app, &ana, 100, &key()).await;
+    assert_eq!(res.body["player"]["hands"][0]["outcome"], "blackjack");
+    assert_eq!(res.body["result"]["net"], 150);
+    assert_eq!(res.body["wallet"]["balance"], 500);
+
+    // Dividir y doblar después de dividir.
+    stack(
+        &pool,
+        &run,
+        6,
+        &[Eight, Six, Eight, Ten, Three, Ten, Five, Two],
+    )
+    .await;
+    let res = deal_round(&app, &ana, 100, &key()).await;
+    let round = res.body["id"].as_str().unwrap().to_string();
+    let res = act(&app, &ana, &round, "split", &key()).await;
+    assert_eq!(res.body["player"]["hands"].as_array().unwrap().len(), 2);
+    assert_eq!(res.body["player"]["active"], 0);
+    // 8,3 = 11: dobla y saca un 10; la segunda mano recibe un 5 (8,5 = 13).
+    let res = act(&app, &ana, &round, "double", &key()).await;
+    assert_eq!(res.body["player"]["active"], 1);
+    assert_eq!(res.body["player"]["hands"][0]["doubled"], true);
+    let res = act(&app, &ana, &round, "stand", &key()).await;
+    assert_eq!(res.body["phase"], "settled");
+    // Dealer 6,10 pide un 2 → 18: la mano de 21 gana 200 y la de 13 pierde 100.
+    assert_eq!(res.body["player"]["hands"][0]["net"], 200);
+    assert_eq!(res.body["player"]["hands"][1]["net"], -100);
+    assert_eq!(res.body["result"]["net"], 100);
+    assert_eq!(res.body["wallet"]["balance"], 600);
+    assert_eq!(res.body["wallet"]["maxBet"], 500);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn casual_idempotency(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let run = new_run(&app, &ana, "vegas").await;
+
+    // Misma clave al repartir → misma respuesta y un solo pago.
+    stack(&pool, &run, 6, &[Ace, Nine, K, Seven]).await;
+    let k = key();
+    let first = deal_round(&app, &ana, 100, &k).await;
+    let again = deal_round(&app, &ana, 100, &k).await;
+    assert_eq!(again.status, StatusCode::CREATED);
+    assert_eq!(first.body, again.body);
+    let rounds: i64 = sqlx::query_scalar("SELECT count(*) FROM rounds")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rounds, 1);
+    let res = send(&app, "GET", "/api/v1/casual/runs/active", None, Some(&ana)).await;
+    assert_eq!(res.body["balance"], 650, "se pagó una sola vez");
+
+    // Misma clave en una acción → misma respuesta, una sola carta.
+    stack(&pool, &run, 6, &[Two, Six, Three, Ten, Four, Two]).await;
+    let res = deal_round(&app, &ana, 100, &key()).await;
+    let round = res.body["id"].as_str().unwrap().to_string();
+    let k = key();
+    let first = act(&app, &ana, &round, "hit", &k).await;
+    let again = act(&app, &ana, &round, "hit", &k).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    assert_eq!(first.body, again.body);
+    let cards = |v: &Value| v["player"]["hands"][0]["cards"].as_array().unwrap().len();
+    assert_eq!(cards(&first.body), 3);
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(cards(&res.body), 4);
+
+    // Una clave que no es UUID → 400.
+    let res = deal_round(&app, &ana, 10, "no-es-uuid").await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn casual_bets_and_bust(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+
+    // Sin partida activa no se reparte; Ranked todavía no existe.
+    let res = deal_round(&app, &ana, 10, &key()).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+    assert_eq!(res.body["code"], "no_active_run");
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/play/rounds",
+        Some(json!({ "kind": "ranked", "bet": 10, "idempotencyKey": key() })),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::NOT_IMPLEMENTED);
+
+    let run = new_run(&app, &ana, "vegas").await;
+    for bet in [0, 5, 15, 510] {
+        let res = deal_round(&app, &ana, bet, &key()).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bet}");
+        assert_eq!(res.body["code"], "bet_out_of_range");
+    }
+    set_balance(&pool, &run, 100).await;
+    let res = deal_round(&app, &ana, 200, &key()).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "insufficient_funds");
+
+    // Con todo el saldo apostado no alcanza para doblar ni dividir.
+    stack(&pool, &run, 6, &[Eight, Six, Eight, Ten, Ten]).await;
+    let res = deal_round(&app, &ana, 100, &key()).await;
+    assert_eq!(res.body["wallet"]["maxBet"], 100);
+    assert_eq!(res.body["allowed"]["split"], false);
+    assert_eq!(res.body["allowed"]["double"], false);
+    let round = res.body["id"].as_str().unwrap().to_string();
+    let res = act(&app, &ana, &round, "double", &key()).await;
+    assert_eq!(res.body["code"], "action_not_allowed");
+
+    // Pide con 16, saca un 10 y se pasa: pierde todo el saldo.
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(res.body["phase"], "settled");
+    assert_eq!(res.body["player"]["hands"][0]["outcome"], "bust");
+    assert_eq!(res.body["wallet"], json!({ "balance": 0, "maxBet": 0 }));
+
+    // Con saldo menor que 10 la partida queda `busted`.
+    let res = send(&app, "GET", "/api/v1/casual/runs/active", None, Some(&ana)).await;
+    assert_eq!(res.body["code"], "no_active_run");
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/play/rounds",
+        Some(json!({ "kind": "casual", "contextId": run, "bet": 10, "idempotencyKey": key() })),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.body["code"], "run_finished");
+    let status: String = sqlx::query_scalar("SELECT status FROM casual_runs WHERE id = $1::uuid")
+        .bind(&run)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "busted");
+    // Y se puede empezar otra.
+    new_run(&app, &ana, "europe").await;
+}
+
+/// El límite de las rutas de juego es por usuario, no por IP.
+#[sqlx::test(migrations = "./migrations")]
+async fn play_is_rate_limited_per_user(pool: PgPool) {
+    let mut cfg = config(10);
+    cfg.play_burst = 2;
+    let app = app(AppState::new(pool, &cfg), &cfg, &RateLimits::new(&cfg));
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    new_run(&app, &ana, "vegas").await;
+    let res = deal_round(&app, &ana, 10, "no-es-uuid").await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    let res = deal_round(&app, &ana, 10, "no-es-uuid").await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(res.body["code"], "rate_limited");
+    // Beto, desde la misma IP, tiene su propio límite.
+    new_run(&app, &beto, "vegas").await;
+}
+
+async fn set_run(pool: &PgPool, run: &str, sql_set: &str) {
+    // Solo con literales de los tests.
+    let sql = format!("UPDATE casual_runs SET {sql_set} WHERE id = $1::uuid");
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(run)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn casual_leaderboard_and_records(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let cookie = |res: Res| res.cookie.unwrap();
+    let ana = cookie(register_named(&app, "ana@example.com", "Ana").await);
+    let beto = cookie(register_named(&app, "beto@example.com", "Beto").await);
+    let carla = cookie(register_named(&app, "carla@example.com", "Carla").await);
+
+    let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
+    assert_eq!(res.body, json!({ "casual": { "runs": 0 } }));
+
+    let a1 = new_run(&app, &ana, "vegas").await;
+    set_run(&pool, &a1, "peak = 900, hands = 40, status = 'retired'").await;
+    let a2 = new_run(&app, &ana, "vegas").await;
+    set_run(&pool, &a2, "peak = 700, hands = 70").await;
+    let b = new_run(&app, &beto, "vegas").await;
+    set_run(&pool, &b, "peak = 1200").await;
+    // Una partida de la semana pasada no cuenta.
+    let c = new_run(&app, &carla, "vegas").await;
+    set_run(
+        &pool,
+        &c,
+        "peak = 5000, started_at = now() - interval '8 days'",
+    )
+    .await;
+
+    let uri = "/api/v1/casual/leaderboard/weekly";
+    let res = send(&app, "GET", uri, None, Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert_eq!(
+        res.body["top"],
+        json!([
+            { "rank": 1, "displayName": "Beto", "value": 1200, "isMe": false },
+            { "rank": 2, "displayName": "Ana", "value": 900, "isMe": true },
+        ])
+    );
+    assert_eq!(res.body["me"]["rank"], 2);
+    assert!(res.body["weekStart"]
+        .as_str()
+        .unwrap()
+        .ends_with("T00:00:00Z"));
+
+    // Sin sesión también se ve, sin `me`; sin partidas esta semana, tampoco.
+    let res = send(&app, "GET", uri, None, None).await;
+    assert_eq!(res.body["top"].as_array().unwrap().len(), 2);
+    assert!(res.body.get("me").is_none());
+    let res = send(&app, "GET", uri, None, Some(&carla)).await;
+    assert!(res.body.get("me").is_none());
+
+    let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
+    assert_eq!(
+        res.body,
+        json!({ "casual": { "runs": 2, "bestPeak": 900, "mostHands": 70 } })
+    );
 }

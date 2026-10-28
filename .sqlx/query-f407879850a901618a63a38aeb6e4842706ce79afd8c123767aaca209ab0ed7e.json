@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT response AS \"response: Jsonb<RoundView>\" FROM rounds\n           WHERE user_id = $1 AND idempotency_key = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "response: Jsonb<RoundView>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "rounds",
+            "name": "response"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f407879850a901618a63a38aeb6e4842706ce79afd8c123767aaca209ab0ed7e"
+}

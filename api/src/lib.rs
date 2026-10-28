@@ -26,23 +26,36 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::client_ip::ClientIpKeyExtractor;
+use crate::auth::JwtKeys;
+use crate::client_ip::{ClientIpKeyExtractor, UserKeyExtractor};
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::state::AppState;
 
 pub type Limiter = Arc<GovernorConfig<ClientIpKeyExtractor, NoOpMiddleware>>;
+pub type UserLimiter = Arc<GovernorConfig<UserKeyExtractor, NoOpMiddleware>>;
 
 /// Límites de tasa por IP del cliente (ver [`client_ip`]): análisis y rutas de cuenta
-/// (registro, login, Google, nombre).
+/// (registro, login, Google, nombre). Las acciones de juego van por usuario.
 pub struct RateLimits {
     pub analyze: Limiter,
     pub auth: Limiter,
+    pub play: UserLimiter,
 }
 
 impl RateLimits {
     pub fn new(cfg: &Config) -> RateLimits {
         let key = ClientIpKeyExtractor::new(&cfg.trusted_proxies);
+        // Juego: 5 por segundo con ráfaga configurable (10 por defecto) por usuario.
+        let play = GovernorConfigBuilder::default()
+            .key_extractor(UserKeyExtractor::new(
+                key.clone(),
+                JwtKeys::new(&cfg.jwt_secret),
+            ))
+            .per_millisecond(200)
+            .burst_size(cfg.play_burst.max(1))
+            .finish()
+            .expect("configuración de límite de tasa válida");
         let analyze = GovernorConfigBuilder::default()
             .key_extractor(key.clone())
             .per_millisecond(cfg.analyze_replenish_ms.max(1))
@@ -59,6 +72,7 @@ impl RateLimits {
         RateLimits {
             analyze: Arc::new(analyze),
             auth: Arc::new(auth),
+            play: Arc::new(play),
         }
     }
 }
@@ -91,7 +105,7 @@ async fn not_found() -> ApiError {
 
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
-    use routes::{analyze, auth, google, sessions};
+    use routes::{analyze, auth, casual, google, play, sessions};
 
     let analyze_routes = Router::new()
         .route("/analyze/hand", post(analyze::hand))
@@ -109,7 +123,21 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/me", patch(auth::update_me))
         .layer(GovernorLayer::new(limits.auth.clone()).error_handler(rate_limited));
 
+    let play_routes = Router::new()
+        .route("/casual/runs", post(casual::create_run))
+        .route("/casual/runs/{id}/retire", post(casual::retire))
+        .route("/play/rounds", post(play::deal))
+        .route("/play/rounds/{id}/actions", post(play::act))
+        .layer(GovernorLayer::new(limits.play.clone()).error_handler(rate_limited));
+
     let other_routes = Router::new()
+        .route("/casual/runs/active", get(casual::active_run))
+        .route(
+            "/casual/leaderboard/weekly",
+            get(casual::weekly_leaderboard),
+        )
+        .route("/me/records", get(casual::records))
+        .route("/play/active", get(play::active))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/logout-all", post(auth::logout_all))
         .route("/auth/me", get(auth::me))
@@ -122,6 +150,7 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
 
     let api = analyze_routes
         .merge(auth_routes)
+        .merge(play_routes)
         .merge(other_routes)
         .with_state(state);
 
