@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM auth_sessions\n         WHERE expires_at < now() - interval '1 day' OR revoked_at < now() - interval '1 day'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "b4d953b0f2d84ce1c1c3fbd8782f421d0b909c60b9941e434ed84e59e3f1357c"
+}

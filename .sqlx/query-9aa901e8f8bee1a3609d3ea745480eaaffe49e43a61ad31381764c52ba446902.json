@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, password_hash, created_at FROM users WHERE lower(email) = lower($1)",
+  "query": "INSERT INTO users (id, email, password_hash, display_name, display_name_key, display_name_set)\n           VALUES ($1, $2, $3, $4, $5, true)\n           RETURNING id, email, display_name, created_at",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,12 @@
       },
       {
         "ordinal": 2,
-        "name": "password_hash",
+        "name": "display_name",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "password_hash"
+            "name": "display_name"
           }
         }
       },
@@ -50,6 +50,10 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
         "Text"
       ]
     },
@@ -60,5 +64,5 @@
       false
     ]
   },
-  "hash": "713dc3db6460424d790fc08337010586f06c8b2baa76192edc22d9b81c7c2537"
+  "hash": "9aa901e8f8bee1a3609d3ea745480eaaffe49e43a61ad31381764c52ba446902"
 }

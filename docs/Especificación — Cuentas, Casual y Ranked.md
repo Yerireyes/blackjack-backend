@@ -1,0 +1,433 @@
+# Especificación — Cuentas, partidas Casual y Ranked
+
+Documento para implementar en el **backend** (`../Backend`). El front se adapta en paralelo
+siguiendo el contrato de la sección 7. **Única copia:** `blackjack-backend/docs/`. El front
+la enlaza y no guarda copias; lo que le toca hacer en cada fase va en «Front — Fase N …» en
+esta misma carpeta. Estado: decisiones de producto cerradas; los valores
+marcados *(ajustable)* son propuestas razonables que se pueden cambiar sin rediseñar.
+
+---
+
+## 1. Resumen
+
+Se agregan cuentas (contraseña + Google) y dos modos con cuenta:
+
+| | **Práctica** (ya existe) | **Casual** | **Ranked** |
+|---|---|---|---|
+| Cuenta | No | Sí | Sí |
+| Quién reparte y liquida | Navegador | **Servidor** | **Servidor** |
+| Capital | Libre | 500 por partida | 500 por temporada; piso de 100 |
+| Ayudas del motor durante la mano | Sí | Sí | **No** (revisión al terminar la mano) |
+| Reglas | Configurables | Elegibles al crear la partida | **Fijas** (Las Vegas) |
+
+Práctica no cambia y no toca el backend.
+
+**Principio rector:** en Casual y Ranked el servidor es la única autoridad. Guarda el zapato,
+reparte con un CSPRNG, valida cada acción, juega el dealer y liquida. El cliente nunca recibe
+la carta oculta del dealer antes de revelarse ni el orden del zapato. Todo lo que el cliente
+envía es una *intención* (apostar X, pedir, plantarse…), nunca un resultado.
+
+---
+
+## 2. Cuentas
+
+*Implementada (fase 1). Migración `api/migrations/20261027000001_accounts.sql`.*
+
+### 2.1 Cambios en `users`
+
+- `display_name text NOT NULL`: nombre visible en rankings.
+  - **Formato:** 3–20 caracteres. Se permiten letras latinas (ASCII y Latin‑1: tildes, ñ, ü,
+    ç…), dígitos, `_`, `-` y espacios internos simples, con al menos una letra o dígito. Se
+    descartan las letras de otros alfabetos (cirílico, griego…) porque algunas son idénticas
+    a las latinas.
+  - **Normalización:** se recortan los espacios de los extremos y se normaliza a NFC, así
+    «José» escrito con la tilde combinada o precompuesta es el mismo nombre.
+  - **Unicidad:** sin distinguir mayúsculas, mediante la columna `display_name_key` (minúsculas
+    Unicode calculadas por la API). No se usa `lower()` porque con el locale C solo convierte
+    ASCII.
+  - **Reservados:** `admin`, `dealer`, `casa`, `blackjack`, `crupier`, `soporte`, etc. Se
+    comparan sin mayúsculas, tildes, espacios, `_` ni `-`, así que «Cása» o «c-a s_a» también
+    se rechazan. La coincidencia tiene que ser exacta: «Casandra» es válido.
+- `display_name_set boolean`: `false` mientras el nombre sea provisional. `/auth/me` lo
+  expone como `needsDisplayName`. Los usuarios anteriores a esta fase reciben un nombre
+  provisional (`Jugador1`, `Jugador2`…) en la migración.
+- `password_hash` pasa a ser **nullable**: las cuentas creadas con Google no tienen contraseña.
+- El email se conserva (único sin distinguir mayúsculas) y **nunca** se expone en rankings.
+
+### 2.2 Tabla nueva `identities`
+
+```sql
+CREATE TABLE identities (
+    id          uuid PRIMARY KEY,
+    user_id     uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    provider    text NOT NULL CHECK (provider IN ('google')),  -- 'facebook' en una fase futura
+    subject     text NOT NULL,          -- "sub" del proveedor; nunca el email
+    email       text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (provider, subject),
+    UNIQUE (user_id, provider)          -- una identidad de cada proveedor por usuario
+);
+```
+
+### 2.3 Google (OAuth 2.0 Authorization Code + PKCE)
+
+**Nunca se vincula una cuenta existente por email de forma automática.** `/auth/register`
+no verifica el email, así que cualquiera puede crear una cuenta con contraseña usando un
+email ajeno. Si Google se vinculara solo por coincidir el email, el dueño real entraría en
+esa cuenta y quien la registró conservaría el acceso con su contraseña. Para vincular,
+el usuario entra con su contraseña y lo pide de forma explícita (modo *vincular*).
+
+- `GET /auth/google/start[?link=1]`: genera `state` y `code_verifier` y los guarda en una
+  cookie httpOnly **cifrada** (`bj_oauth`) de 10 minutos, restringida a `/api/v1/auth/google`.
+  Redirige a Google con `scope=openid email profile`, `code_challenge` S256 y
+  `prompt=select_account`. Con `link=1` hace falta una sesión iniciada **y** una prueba de
+  vinculación vigente en esa sesión (`POST /auth/google/link-intent`, abajo), que se gasta
+  aquí; sin ella redirige con `reauth_required`. El usuario queda guardado en la cookie.
+- `POST /auth/google/link-intent` `{ password }` (con sesión): comprueba la contraseña y deja
+  en la sesión una prueba de un solo uso que vence a los 5 minutos. 204, o 403
+  `invalid_password`, 409 `no_password`, `already_linked` o `google_disabled`.
+- `POST /auth/google/unlink` `{ password }` (con sesión): quita Google y revoca las demás
+  sesiones del usuario. 200 `Me`, o 403 `invalid_password`, 409 `no_password` (la cuenta se
+  quedaría sin forma de entrar) o `not_linked`.
+- `GET /auth/google/callback?code&state`:
+  1. Lee la cookie y la borra (se usa una sola vez). Comprueba que no haya vencido y que
+     `state` coincida.
+  2. Intercambia `code` + `code_verifier` en el servidor (nunca en el cliente).
+  3. Lee el `id_token` de la respuesta y comprueba `iss`, `aud` (el `GOOGLE_CLIENT_ID`) y `exp`.
+     No se verifica la firma: el token llega directo del endpoint de tokens de Google por
+     TLS, y OpenID Connect Core 3.1.3.7 lo permite. Así no hace falta descargar las claves
+     JWKS.
+  4. **Login:** (a) busca por `identities(provider, subject)` e inicia sesión. (b) Si no
+     existe y el email ya tiene cuenta, responde `account_exists` sin vincular. (c) Si el email
+     no está verificado, responde `email_unverified`. (d) Si no, crea un usuario sin contraseña
+     con un `display_name` provisional único (`Jugador4821`) y `needsDisplayName = true`.
+  5. **Vincular:** la sesión del callback tiene que ser la misma que inició el flujo. Agrega
+     la identidad al usuario. Si ya era suya, no hace nada. Responde `identity_in_use` si la
+     tiene otra cuenta y `already_linked` si el usuario ya tiene otra cuenta de Google.
+  6. En un login emite el JWT en `bj_session`. Siempre redirige a `FRONTEND_ORIGIN/` con
+     `?login=ok`, `?link=ok` o `?login=error&code=...` / `?link=error&code=...`.
+- **Códigos de error en la redirección:** `google_disabled`, `invalid_state`, `cancelled`
+  (el usuario canceló en Google), `google_error`, `account_exists`, `email_unverified`,
+  `unauthorized`, `reauth_required`, `identity_in_use`, `already_linked` e `internal`.
+- **Variables:** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` y `GOOGLE_REDIRECT_URI`.
+  - Google queda habilitado si están el ID y el secreto; entonces la URI es obligatoria.
+  - Sin ellos el servidor arranca igual, con Google deshabilitado, y `/auth/providers`
+    devuelve `{ google: false }` para que el front oculte el botón.
+  - Si solo hay uno de los dos, el servidor no arranca (es un error de configuración).
+- **Desarrollo:** el front accede a la API a través del proxy de Vite (`/api` →
+  `127.0.0.1:8080`), así que todo comparte el origen `http://localhost:5180`. La URI de
+  redirección es `http://localhost:5180/api/v1/auth/google/callback`.
+
+### 2.4 Endpoints de cuenta (todos bajo `/api/v1`)
+
+| Método | Ruta | Cambio |
+|---|---|---|
+| POST | `/auth/register` | Pide también `displayName`; 409 `email_taken` o `display_name_taken` |
+| POST | `/auth/login` | Si la cuenta no tiene contraseña, el mismo error genérico |
+| GET | `/auth/providers` | `{ google: boolean }` |
+| GET | `/auth/google/start[?link=1]` · `/auth/google/callback` | Nuevos (2.3) |
+| POST | `/auth/google/link-intent` · `/auth/google/unlink` | Nuevos (2.3), con `{ password }` |
+| POST | `/auth/logout-all` | Revoca todas las sesiones del usuario |
+| GET | `/auth/me` | Ver `Me` abajo |
+| PATCH | `/me` | `{ displayName }` con la validación de 2.1; confirma el nombre provisional |
+
+`register`, `login`, `/auth/me` y `PATCH /me` devuelven el mismo objeto (nunca el hash):
+
+```ts
+interface Me {
+  id: string; email: string; displayName: string;
+  needsDisplayName: boolean; hasPassword: boolean;
+  providers: string[];   // proveedores vinculados: ["google"]
+  createdAt: string;
+}
+```
+
+- Un nombre inválido responde 400 `display_name_invalid`, con el motivo en `message`.
+- El registro, el login, las rutas de Google y `PATCH /me` comparten el límite de tasa
+  por IP: ráfaga de `AUTH_BURST` (10) y después una petición cada 6 s.
+- Una contraseña incorrecta en una acción con sesión es 403 `invalid_password`, nunca 401:
+  para el front, un 401 con sesión significa que la sesión se cerró.
+- Front y API comparten origen (proxy de Vite en desarrollo, reverse proxy en producción),
+  así que el front no depende de CORS. CORS sigue restringido a `FRONTEND_ORIGIN` y permite
+  `PATCH`, solo como resguardo.
+
+**Fuera de alcance de esta fase:** recuperación de contraseña por email (requiere un servicio
+de correo), cambiar la contraseña o crear una en cuentas de Google, Facebook y borrar la
+cuenta.
+
+---
+
+## 3. Motor de juego en el servidor (base de Casual y Ranked)
+
+Un módulo puro, sin IO (`engine/src/game/` o un crate `game`), testeable sin base de datos.
+Debe replicar exactamente las reglas que hoy aplica el front en
+`../Frontend/src/store/tableStore.ts` (`allowedActions`, `settleHand`, `dealerMustHit`, el orden
+de reparto, el peek y la división de ases). Las reglas son del motor y no cambian. Los casos de
+`tableStore.test.ts` sirven como especificación ejecutable: hay que portarlos.
+
+### 3.1 Estado
+
+```text
+Shoe        { cards: Vec<Card>, next: usize, decks, penetration }   // orden barajado; solo servidor
+RoundState  { bet, player_hands: Vec<Hand>, active, dealer: { up, hole, hole_revealed, hits },
+              phase: Player | Dealer | Settled, decisions: Vec<Decision> }
+Hand        { cards, from_split, split_aces, doubled, surrendered, done, outcome, net }
+Decision    { hand_index, action, ev_chosen, ev_best, best, exact }  // para la revisión (sección 5.4)
+```
+
+- **Barajado:** Fisher–Yates con un CSPRNG (`rand::rngs::OsRng` o ChaCha20 sembrado desde
+  `OsRng`). Se rebaraja al alcanzar la penetración, antes de repartir la ronda siguiente.
+- **Sin bots** en Casual ni Ranked: la mesa es el jugador contra el dealer.
+- **Peek:** si el dealer tiene blackjack con peek, la ronda termina en el reparto. La respuesta
+  lo indica (`peekBlackjack: true`) y el front anima la revelación. El servidor ya liquidó.
+
+### 3.2 Liquidación y fichas
+
+- Todos los importes son **enteros** (`bigint`). Las apuestas son múltiplos de 10, así que 3:2
+  paga 15 y rendirse devuelve 5 por cada 10. Se calcula `round(net × bet)` igual que el front.
+- **Doblar y dividir** solo se permiten si el saldo cubre la unidad extra:
+  `saldo − bet × unidades_en_juego ≥ bet`. Esa condición se suma a `allowedActions`.
+- La apuesta no se descuenta al repartir. Se aplica el neto al liquidar, en la misma
+  transacción que cierra la ronda.
+
+### 3.3 Concurrencia, idempotencia y auditoría
+
+- **Una sola ronda activa por usuario:**
+  `CREATE UNIQUE INDEX ... ON rounds (user_id) WHERE status = 'active'`.
+- Cada operación corre en una transacción con `SELECT ... FOR UPDATE` sobre la fila de la
+  cartera (la partida casual o la cuenta ranked) y sobre la ronda.
+- **Idempotencia:** toda petición que cambia estado lleva `idempotencyKey` (uuid del cliente).
+  `UNIQUE (round_id, idempotency_key)` en las acciones. Si una clave se repite, se devuelve la
+  misma respuesta sin volver a ejecutar.
+- **Retomar:** si el cliente se desconecta, la ronda sigue activa y `GET /play/active` la
+  devuelve. *(Ajustable)* Una ronda sin acciones durante 24 h se cierra con «plantarse» en
+  todas las manos pendientes.
+- Las rondas liquidadas se conservan con su estado final completo (auditoría y revisión).
+- Límite de tasa por usuario en las acciones *(ajustable: 5/s, ráfaga de 10)*.
+
+---
+
+## 4. Casual
+
+### 4.1 Reglas
+
+- Cada **partida** empieza con **500** fichas, con las reglas que elija el usuario: un preset
+  (`vegas`, `europe`, `sixToFive`) o reglas personalizadas validadas como en `/analyze/*`.
+  Con 6:5 la apuesta mínima es 10 y el pago se redondea con `round()`.
+- Apuesta: mínimo 10, máximo 500 y nunca más que el saldo, en múltiplos de 10.
+- La partida **termina** cuando el usuario se retira (`POST /casual/runs/{id}/retire`) o
+  cuando el saldo queda por debajo de 10. Una partida terminada no se reabre. Se puede tener
+  **una sola partida casual activa** a la vez.
+- **Ayudas:** en Casual el cliente recibe la composición restante del zapato (`shoeCounts`,
+  con la oculta contada como no vista), así el front sigue calculando EV y recomendaciones con
+  su motor WASM igual que hoy. El orden del zapato nunca se envía.
+
+### 4.2 Récords e incentivos (para que Casual tenga motivos para volver)
+
+Fase 3 (núcleo):
+
+- Por partida se guardan `peak` (saldo máximo alcanzado), `hands`, `final_balance`, `ended_reason`.
+- **Récords personales:** mejor pico, más manos sobrevividas y mejor racha de decisiones óptimas.
+- **Ranking casual semanal** por mejor pico (lunes 00:00 UTC). Es confiable porque el servidor
+  reparte.
+
+Fase 5 (extras, solo para dimensionar el modelo):
+
+- **Reto diario:** mismas reglas y mismo zapato para todos ese día. Semilla:
+  `HMAC(DAILY_SEED_SECRET, fecha)`, secreta para que no se pueda precalcular. Un intento por
+  usuario y día, 30 manos; ranking diario por saldo final.
+- **Logros** («10 decisiones óptimas seguidas», «sobrevive 50 manos con 6:5»…) y
+  **recompensas cosméticas** (paño, dorsos, fichas, títulos). **Nunca** se dan fichas de Ranked.
+
+---
+
+## 5. Ranked
+
+### 5.1 Reglas fijas
+
+Las Vegas para todos: 6 mazos, S17, doblar con cualquier par de cartas, DAS, hasta 4 manos, sin
+redividir ases, rendición tardía, peek, 3:2, penetración 75 %. Viven en código, no en la
+petición.
+
+### 5.2 Temporadas
+
+- **Mensuales**, en UTC: desde el día 1 a las 00:00 hasta el día 1 del mes siguiente.
+- Al jugar por primera vez en la temporada se crea la cuenta ranked del usuario con **500**.
+- Al cerrar la temporada se guarda la posición final y se asignan medallas:
+  1.º, 2.º, 3.º y top 10 %, solo entre quienes cumplan el mínimo de manos.
+  Una ronda activa al cambiar la temporada se liquida en la temporada en que empezó.
+
+### 5.3 Saldo, piso y límites anti-abuso
+
+Combinación decidida (**todas** aplican):
+
+1. **Piso de 100 con recarga limitada.** Cuando, al liquidar, el saldo queda por debajo de
+   100, se recarga hasta 100 **solo si** pasaron 24 h o más desde la última recarga. Si no, se
+   sigue jugando con lo que haya (si queda en 10 o más). Con menos de 10 no se puede apostar
+   hasta que la recarga esté disponible. La respuesta incluye `refillAvailableAt`.
+   Cada recarga se registra (`ranked_refills`).
+2. **El ranking se ordena por ganancia neta**, no por saldo:
+   `net = balance − 500 − total_recargado`. Recargar permite seguir jugando, pero no da puntos.
+3. **Apuesta máxima relativa:** `max_bet = clamp(floor(0.25 × saldo / 10) × 10, 10, 500)`.
+   Ejemplos: con 100 → 20; con 1.000 → 250; con 4.000 o más → 500.
+4. **Mínimo de 200 manos** en la temporada para aparecer en el ranking y recibir medallas.
+   Debajo de eso, el usuario ve su posición como «provisional».
+
+### 5.4 Sin ayudas durante la mano, revisión al terminar
+
+- **Durante la ronda** el cliente **no** recibe `shoeCounts` ni ninguna recomendación. Solo las
+  cartas visibles, las acciones permitidas y su saldo y límites.
+- **En cada decisión** el servidor llama a `analyze_hand` del motor con la información que tenía
+  el jugador: cartas visibles, la oculta contada como no vista y la composición restante. Guarda
+  `best`, `ev_best`, `ev_chosen` y `exact` en `Decision`. Cuesta unos 55–300 ms por decisión;
+  se ejecuta en `spawn_blocking`, como en `/analyze/*`.
+- **Al liquidar**, la respuesta incluye `review`: por decisión, la acción elegida, la óptima y el
+  EV perdido. Así el modo sigue siendo didáctico sin dar ventaja durante la mano.
+- Contar cartas mirando la mesa es habilidad legítima; lo que no se hace es dárselo calculado.
+
+---
+
+## 6. Modelo de datos (resumen)
+
+```text
+users            + display_name (único ci), password_hash NULL
+identities       (2.2)
+casual_runs      id, user_id, rules jsonb, shoe jsonb, balance, peak, hands, status
+                 (active|retired|busted), started_at, ended_at
+                 UNIQUE (user_id) WHERE status = 'active'
+seasons          id, starts_at, ends_at, closed_at
+ranked_accounts  (user_id, season_id) PK, shoe jsonb, balance, refilled_total, last_refill_at,
+                 hands, peak
+ranked_refills   id, user_id, season_id, amount, at
+season_results   season_id, user_id, rank, net, hands, medal
+rounds           id, user_id, kind (casual|ranked), context_id, bet, state jsonb, status
+                 (active|settled), net, created_at, settled_at
+                 UNIQUE (user_id) WHERE status = 'active'
+round_actions    id, round_id, seq, action, idempotency_key, created_at
+                 UNIQUE (round_id, idempotency_key)
+```
+
+Las tablas `game_sessions` y `hands` actuales quedan como están (estadísticas del modo práctica
+con sesión iniciada). La revisión de Casual y Ranked sale de `rounds.state.decisions`.
+
+---
+
+## 7. Contrato HTTP de juego (para el front)
+
+**Los DTOs de Casual y Ranked sí se generan; el front no los copia a mano.** `RoundView`,
+los cuerpos de los endpoints de 7.1, las filas de los rankings y los récords se definen en
+Rust con `tsify` (junto a los de `engine/src/dto.rs`), así que `npm run gen:contract` los
+escribe en `contract/contract.ts` y en `../Frontend/src/engine/contract.ts`, igual que los de
+`/analyze/*`. `npm run check:contract` falla si quedan desfasados.
+
+Los tipos de cuentas (`Me`, `Providers`, `ApiError`, sección 2.4) son la excepción: no pasan
+por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuentas.md».
+
+### 7.1 Endpoints
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| POST | `/casual/runs` | `{ rules \| preset }` → crea la partida (409 si ya hay una activa) |
+| GET | `/casual/runs/active` | La partida activa o 404 |
+| POST | `/casual/runs/{id}/retire` | Cierra la partida (409 si hay una ronda activa) |
+| GET | `/ranked/me` | Cuenta ranked de la temporada actual (la crea si no existe) |
+| POST | `/play/rounds` | `{ kind, contextId?, bet, idempotencyKey }` → reparte |
+| GET | `/play/active` | Ronda activa, si la hay, como `RoundView` |
+| POST | `/play/rounds/{id}/actions` | `{ action, idempotencyKey }` → `RoundView` |
+| GET | `/ranked/leaderboard?season=` | Top 100 + la fila del usuario |
+| GET | `/casual/leaderboard/weekly` | Top 100 por pico de la semana |
+| GET | `/me/records` | Récords personales y medallas |
+
+### 7.2 `RoundView` (lo único que el cliente ve de una ronda)
+
+```ts
+interface RoundView {
+  id: string;
+  kind: 'casual' | 'ranked';
+  bet: number;
+  phase: 'player' | 'settled';    // el turno del dealer se resuelve dentro de la misma respuesta
+  player: { hands: HandView[]; active: number };
+  dealer: {
+    up: CardView;
+    hole: CardView | null;        // null mientras no se revela
+    hits: CardView[];             // en orden, para que el front las anime una a una
+  };
+  allowed: { hit: boolean; stand: boolean; double: boolean; split: boolean; surrender: boolean };
+  peekBlackjack: boolean;
+  wallet: { balance: number; maxBet: number; refillAvailableAt?: string };
+  shoeCounts?: number[];          // solo casual: composición restante (oculta contada como no vista)
+  penetration: number;            // fracción repartida, para el indicador del zapato
+  result?: {                      // solo en 'settled'
+    net: number;                  // fichas, entero
+    refilled?: number;            // ranked: recarga aplicada en esta liquidación
+    review?: ReviewItem[];        // ranked (y casual si se quiere)
+  };
+}
+interface CardView { rank: 'A'|'2'|'3'|'4'|'5'|'6'|'7'|'8'|'9'|'10'|'J'|'Q'|'K'; suit: 'S'|'H'|'D'|'C' }
+interface HandView { cards: CardView[]; doubled: boolean; surrendered: boolean; fromSplit: boolean;
+                     outcome?: 'blackjack'|'win'|'push'|'lose'|'bust'|'surrender'; net?: number }
+interface ReviewItem { handIndex: number; chosen: Action; best: Action; evChosen: number;
+                       evBest: number; exact: boolean }
+```
+
+Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
+`round_active`, `no_active_round`, `bet_out_of_range`, `insufficient_funds`,
+`action_not_allowed`, `run_finished`, `refill_pending`, `display_name_taken`,
+`display_name_invalid`.
+
+---
+
+## 8. Fases y criterios de aceptación
+
+1. **Cuentas (hecha).** Migración de `users` + `identities`, `display_name`, Google OAuth y los
+   endpoints de 2.4. *Tests:* registro con nombre duplicado → 409; callback con `state`
+   inválido o sin cookie → error; Google con el email de una cuenta existente **no** se
+   vincula solo (`account_exists`) y sí se vincula de forma explícita desde la sesión;
+   `/auth/me` nunca devuelve el hash. Se prueban contra un endpoint de tokens de Google
+   simulado, que también comprueba PKCE.
+2. **Motor de juego.** Módulo puro de la sección 3 con los casos de `tableStore.test.ts`
+   portados, más propiedades: el zapato nunca reparte una carta dos veces; el neto siempre es
+   entero; la oculta nunca aparece en un `RoundView` sin revelar.
+3. **Casual.** Tablas, endpoints de 7.1, récords y ranking semanal. *Tests:* dos rondas activas
+   → 409; misma `idempotencyKey` → misma respuesta y un solo descuento; retirarse con una ronda
+   activa → 409; con saldo < 10 la partida queda `busted`.
+4. **Ranked.** Temporadas, piso, recarga cada 24 h, apuesta máxima relativa, ganancia neta,
+   mínimo de manos, revisión. *Tests:* recarga solo una vez en 24 h; `max_bet` según la
+   fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
+   `review` coincide con `analyze_hand` para el mismo estado.
+5. **Extras.** Reto diario, logros, cosméticos y Facebook.
+
+---
+
+## 9. Seguridad: lista de control
+
+- [ ] La oculta y el orden del zapato jamás salen del servidor antes de tiempo (test de propiedad).
+- [ ] CSPRNG para barajar; la semilla del reto diario es secreta (`DAILY_SEED_SECRET`).
+- [ ] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
+- [ ] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
+- [ ] Rankings sin emails; `display_name` validado y con lista de reservados.
+- [x] OAuth: `state` + PKCE, cookie temporal cifrada, intercambio del código solo en el
+      servidor, nunca vincular por email automáticamente (solo de forma explícita con
+      sesión) y crear cuentas solo con email verificado.
+- [ ] Límite de tasa en registro, login, OAuth (hecho) y acciones de juego.
+- [ ] Cookies `Secure` en producción (`cookie_secure`); CORS solo para `FRONTEND_ORIGIN`.
+- [x] **Sesiones revocables.** Tabla `auth_sessions (id, user_id, created_at, expires_at,
+      revoked_at, last_seen_at, user_agent)`; el JWT lleva su `id` como `sid`. Cada petición
+      autenticada comprueba que la fila exista, no esté revocada y no haya vencido (una
+      consulta por clave primaria; `last_seen_at` se actualiza como mucho cada 5 min).
+      `POST /auth/logout` revoca la sesión actual y `POST /auth/logout-all` todas las del
+      usuario. Una tarea horaria borra las vencidas o revocadas hace más de un día. Los JWT
+      anteriores (sin `sid`) dejaron de valer.
+      Vincular Google **no** revoca las demás sesiones: si quien vincula es alguien con un
+      token robado, cerraría la sesión del dueño y dejaría la suya. Cambiar la contraseña,
+      cuando exista, sí debe revocar las demás.
+- [x] **Vincular con una sesión robada.** Un token solo ya no basta para vincular Google:
+      `POST /auth/google/link-intent` con la contraseña deja en `auth_sessions` una prueba de
+      un solo uso que vence a los 5 minutos (`link_intent_until`), y `start?link=1` la gasta
+      de forma atómica; sin ella vuelve con `reauth_required`. Está atada a la sesión que la
+      pidió. `POST /auth/google/unlink` (con la contraseña) quita Google, se rechaza si la
+      cuenta no tiene contraseña (`no_password`) y **revoca las demás sesiones**: si alguien
+      había vinculado su Google con un token robado, también pierde lo que abrió con él, y
+      como exige la contraseña no sirve para echar al dueño. Contraseña incorrecta → 403
+      `invalid_password`, nunca 401 (para el front, 401 con sesión = sesión cerrada). Ambos
+      endpoints entran en el límite de tasa de cuentas.

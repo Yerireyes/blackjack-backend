@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_sessions SET link_intent_until = now() + make_interval(mins => $2)\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c708975b35b060d00e9aa3208bcc4d536dc983c65c8ceae23f99c781f77dae83"
+}

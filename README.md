@@ -125,6 +125,24 @@ valores:
   $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
   ```
 
+#### Login con Google (opcional, gratis)
+
+Sin `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET`, Google queda deshabilitado:
+`/auth/providers` devuelve `{ "google": false }` y el front oculta el botón. Para
+activarlo no hace falta una cuenta de pago ni activar la facturación:
+
+1. En <https://console.cloud.google.com>, crea un proyecto.
+2. En **APIs y servicios → Pantalla de consentimiento de OAuth**, elige *Externo*, completa
+   el nombre de la app y tu email, y agrega los permisos `openid`, `email` y `profile`. En
+   modo *Testing* solo pueden entrar los usuarios de prueba que agregues (hasta 100).
+   Publicar la app no requiere la verificación de Google con estos permisos.
+3. En **Credenciales → Crear credenciales → ID de cliente de OAuth**, elige *Aplicación web*.
+   En *URI de redirección autorizados* pon `http://localhost:5180/api/v1/auth/google/callback`.
+   Pasa por el proxy de Vite del front, que reenvía `/api` a la API. Para producción agrega
+   también `https://<dominio>/api/v1/auth/google/callback`.
+4. Copia el ID y el secreto a `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` en `.env`, y
+   reinicia la API.
+
 ### 6. Primer arranque
 
 ```sh
@@ -245,10 +263,16 @@ estrategia, con re-división real):
 | Método | Ruta | Qué hace | Auth |
 | --- | --- | --- | --- |
 | POST | `/analyze/hand` · `/analyze/dealer` · `/analyze/round` | Mismo contrato que WASM | No |
-| POST | `/auth/register` | Crea usuario (argon2id) y deja la sesión iniciada | No |
-| POST | `/auth/login` | JWT (HS256, 7 días) en cookie `bj_session` httpOnly | No |
-| POST | `/auth/logout` | Borra la cookie | Sí |
-| GET | `/auth/me` | Usuario de la sesión actual | Sí |
+| POST | `/auth/register` | Crea usuario (argon2id, `displayName`) y deja la sesión iniciada | No |
+| POST | `/auth/login` | Crea una sesión revocable: JWT (HS256, 7 días) en cookie `bj_session` httpOnly | No |
+| POST | `/auth/logout` | Revoca la sesión actual y borra la cookie | Sí |
+| POST | `/auth/logout-all` | Revoca todas las sesiones del usuario (todos los dispositivos) | Sí |
+| GET | `/auth/me` | Usuario de la sesión: nombre, `needsDisplayName`, `providers`, `hasPassword` | Sí |
+| PATCH | `/me` | Cambia el nombre visible | Sí |
+| GET | `/auth/providers` | `{ google }`: qué logins externos están habilitados | No |
+| GET | `/auth/google/start[?link=1]` · `/auth/google/callback` | Login o vinculación con Google (redirige al front) | No / Sí con `link=1` |
+| POST | `/auth/google/link-intent` | Confirma la contraseña antes de vincular (prueba de un solo uso, 5 min) | Sí |
+| POST | `/auth/google/unlink` | Quita Google con la contraseña; revoca las demás sesiones | Sí |
 | POST · GET | `/sessions` | Crea una sesión con sus reglas · lista las del usuario | Sí |
 | POST | `/sessions/{id}/hands` | Registra una mano (cartas, acción elegida y óptima, EVs) | Sí |
 | GET | `/sessions/{id}/stats` | Manos, % óptimas, EV perdido, decisiones aproximadas, W/P/L | Sí |
@@ -257,13 +281,89 @@ estrategia, con re-división real):
 
 - Errores siempre como `{ "code": "...", "message": "..." }`; `EngineError` → 422.
 - `/analyze/*` corre en `spawn_blocking` con límite de 5 s y límite de tasa por IP
-  (`ANALYZE_REPLENISH_MS`, `ANALYZE_BURST`); login y registro tienen su propio límite.
-- CORS solo para `FRONTEND_ORIGIN`, con credenciales (el front debe usar
-  `fetch(..., { credentials: "include" })`).
+  (`ANALYZE_REPLENISH_MS`, `ANALYZE_BURST`). Las rutas de cuenta (registro, login,
+  Google y `PATCH /me`) tienen su propio límite (`AUTH_BURST`). La IP sale de
+  `X-Forwarded-For` solo si la conexión viene de `TRUSTED_PROXIES` (ver producción).- Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
+  automáticamente) en la sección 2 de
+  [docs/Especificación — Cuentas, Casual y Ranked.md](docs/).
+- **Front y API comparten origen.** El front llama con URLs relativas (`/api/v1/...`) y
+  `credentials: "same-origin"` (el valor por defecto de `fetch`). En desarrollo lo resuelve
+  el proxy de Vite (`npm run dev` y `npm run preview`). En producción, el reverse proxy
+  sirve el front y reenvía `/api` (ver [Despliegue en producción](#despliegue-en-producción)).
+  La cookie de sesión y la vuelta del login con Google dependen de esto.
+- CORS queda restringido a `FRONTEND_ORIGIN` solo como resguardo; con el mismo origen el
+  navegador no lo usa.
 - Una sesión ajena responde 404 (no revela que existe).
 - Cuerpo máximo 64 KiB; timeout global de 10 s.
 - Tests de punta a punta en `api/tests/http.rs` con `#[sqlx::test]` (una base nueva por
   test; el rol `blackjack` tiene `CREATEDB` para eso).
+
+## Despliegue en producción
+
+Front y API van bajo el mismo dominio: un reverse proxy sirve el `dist/` del front en `/` y
+reenvía `/api` a la API, que escucha solo en local (`BIND_ADDR=127.0.0.1:8080`).
+
+`.env` del servidor (además de `DATABASE_URL` y `JWT_SECRET`):
+
+```sh
+COOKIE_SECURE=true
+FRONTEND_ORIGIN=https://<dominio>
+# Solo si Google está habilitado; la misma URI debe estar autorizada en Google Cloud.
+GOOGLE_REDIRECT_URI=https://<dominio>/api/v1/auth/google/callback
+```
+
+`FRONTEND_ORIGIN` es adonde vuelve el usuario después del login con Google
+(`https://<dominio>/?login=ok`). Sin barra final.
+
+**Caddy** (obtiene y renueva el certificado HTTPS solo):
+
+```caddyfile
+<dominio> {
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle {
+        root * /srv/blackjack/dist
+        try_files {path} /index.html
+        file_server
+    }
+}
+```
+
+**Nginx** (equivalente, con el certificado ya configurado):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name <dominio>;
+    # ssl_certificate / ssl_certificate_key ...
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        root /srv/blackjack/dist;
+        try_files $uri /index.html;
+    }
+}
+```
+
+`/api/...` no lleva barra final en `proxy_pass`, así la ruta llega completa a la API. El
+`.wasm` del motor debe servirse con `Content-Type: application/wasm` (Caddy y Nginx ya lo
+hacen por defecto).
+
+**IP del cliente (límite de tasa).** Detrás del proxy, la conexión siempre viene de
+`127.0.0.1`. Por eso la API lee `X-Forwarded-For`, pero solo si la conexión viene de un proxy
+de confianza (`TRUSTED_PROXIES`: IPs separadas por comas; por defecto `127.0.0.1,::1`;
+vacía, no confía en nadie). Recorre la cabecera de derecha a izquierda y toma la primera IP
+que no sea un proxy de confianza: Caddy y Nginx agregan la IP real al final, y lo que esté a
+la izquierda lo pudo escribir el cliente. Si el proxy está en otra máquina (o en otro
+contenedor), agrega su IP a `TRUSTED_PROXIES`. La API nunca debe quedar expuesta
+directamente con el proxy en la misma IP que el cliente podría usar.
 
 ## Rendimiento
 
