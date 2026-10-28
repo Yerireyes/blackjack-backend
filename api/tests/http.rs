@@ -1518,6 +1518,8 @@ async fn play_is_rate_limited_per_user(pool: PgPool) {
     let res = deal_round(&app, &ana, 10, "no-es-uuid").await;
     assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(res.body["code"], "rate_limited");
+    // La recarga es de 200 ms, pero nunca se pide esperar 0 s.
+    assert_eq!(res.body["message"], "demasiadas peticiones; reintenta en 1 s");
     // Beto, desde la misma IP, tiene su propio límite.
     new_run(&app, &beto, "vegas").await;
 }

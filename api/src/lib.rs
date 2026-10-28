@@ -80,6 +80,8 @@ impl RateLimits {
 fn rate_limited(err: GovernorError) -> Response<Body> {
     match err {
         GovernorError::TooManyRequests { wait_time, .. } => {
+            // governor trunca a segundos enteros: con recargas de menos de 1 s saldría 0.
+            let wait_time = wait_time.max(1);
             let mut res = ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limited",
