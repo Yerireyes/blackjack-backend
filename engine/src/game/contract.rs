@@ -1,4 +1,4 @@
-//! Contrato HTTP de Casual (y más adelante Ranked) con el front. Se generan en
+//! Contrato HTTP de Casual y Ranked con el front. Se generan en
 //! `contract.ts` con `npm run gen:contract`, como los de `/analyze/*`. JSON en camelCase.
 
 use serde::{Deserialize, Serialize};
@@ -194,7 +194,8 @@ pub struct RoundView {
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 pub struct NewRoundRequest {
     pub kind: RoundKind,
-    /// Casual: id de la partida activa. Si falta, se usa la partida activa.
+    /// Casual: id de la partida activa. Si falta, se usa la partida activa. Ranked:
+    /// se ignora; siempre es la cuenta de la temporada actual.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub context_id: Option<String>,
@@ -357,4 +358,110 @@ pub struct CasualRecords {
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 pub struct MyRecords {
     pub casual: CasualRecords,
+    pub ranked: RankedRecords,
+}
+
+/// Medalla de fin de temporada (solo con el mínimo de manos).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum Medal {
+    Gold,
+    Silver,
+    Bronze,
+    /// Dentro del 10 % mejor, sin podio.
+    Top10,
+}
+
+/// `GET /ranked/me`: la cuenta ranked de la temporada actual.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RankedAccountView {
+    pub id: String,
+    /// Temporada, `"AAAA-MM"`.
+    pub season: String,
+    /// Fin de la temporada (RFC 3339).
+    pub season_ends_at: String,
+    pub balance: i64,
+    pub peak: i64,
+    pub hands: u32,
+    pub refilled_total: i64,
+    /// Ganancia neta, lo que ordena el ranking: `balance − 500 − refilledTotal`.
+    pub net: i64,
+    /// Apuesta máxima para la próxima ronda (0 si el saldo no alcanza el mínimo).
+    pub max_bet: i64,
+    /// Si el saldo está bajo el piso y la recarga todavía no está disponible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub refill_available_at: Option<String>,
+    /// Manos necesarias para entrar en el ranking.
+    pub min_hands: u32,
+    /// Fracción del zapato ya repartida.
+    pub penetration: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RankedRow {
+    /// Posición entre quienes tienen el mínimo de manos, desde 1. Empates comparten
+    /// posición. Si `provisional`, es la que tendría con esa ganancia.
+    pub rank: u32,
+    pub display_name: String,
+    pub net: i64,
+    pub hands: u32,
+    /// Todavía no tiene el mínimo de manos (solo puede pasar en `me`).
+    pub provisional: bool,
+    /// Solo en temporadas cerradas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub medal: Option<Medal>,
+    pub is_me: bool,
+}
+
+/// `GET /ranked/leaderboard?season=AAAA-MM`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RankedLeaderboard {
+    pub season: String,
+    pub starts_at: String,
+    pub ends_at: String,
+    /// Cerrada: posiciones finales y medallas asignadas.
+    pub closed: bool,
+    pub min_hands: u32,
+    /// Los 100 primeros con el mínimo de manos.
+    pub top: Vec<RankedRow>,
+    /// La fila del usuario, si jugó esa temporada (aunque esté en `top`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub me: Option<RankedRow>,
+}
+
+/// Resultado final en una temporada cerrada.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct SeasonResult {
+    pub season: String,
+    pub rank: u32,
+    pub net: i64,
+    pub hands: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub medal: Option<Medal>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RankedRecords {
+    /// Temporadas cerradas en las que entró en el ranking, de la más reciente a la
+    /// más antigua.
+    pub seasons: Vec<SeasonResult>,
+    /// Mejor posición final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub best_rank: Option<u32>,
 }

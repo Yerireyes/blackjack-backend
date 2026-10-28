@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.net AS \"net!\", a.hands, u.display_name, r.medal,\n                      1 + (SELECT count(*) FROM ranked_accounts o\n                           WHERE o.season_id = a.season_id AND o.hands >= $3 AND o.net > a.net)\n                          AS \"pos!\"\n               FROM ranked_accounts a\n               JOIN users u ON u.id = a.user_id\n               LEFT JOIN season_results r ON r.season_id = a.season_id AND r.user_id = a.user_id\n               WHERE a.season_id = $1 AND a.user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "net!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ranked_accounts",
+            "name": "net"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "hands",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ranked_accounts",
+            "name": "hands"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "medal",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "season_results",
+            "name": "medal"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "pos!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "5ce74ae694db11866fd9dfb9459d6d1d5beb7f57ab8850fe343c278db9ac377c"
+}

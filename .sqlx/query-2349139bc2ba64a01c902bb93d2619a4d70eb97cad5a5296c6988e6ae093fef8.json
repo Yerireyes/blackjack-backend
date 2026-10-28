@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.id, r.user_id FROM rounds r\n         WHERE r.status = 'active'\n           AND coalesce((SELECT max(a.created_at) FROM round_actions a WHERE a.round_id = r.id),\n                        r.created_at) < $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rounds",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rounds",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2349139bc2ba64a01c902bb93d2619a4d70eb97cad5a5296c6988e6ae093fef8"
+}

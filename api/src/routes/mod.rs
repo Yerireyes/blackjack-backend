@@ -3,6 +3,7 @@ pub mod auth;
 pub mod casual;
 pub mod google;
 pub mod play;
+pub mod ranked;
 pub mod sessions;
 
 use axum::extract::State;

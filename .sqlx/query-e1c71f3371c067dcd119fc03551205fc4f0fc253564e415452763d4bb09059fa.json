@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM seasons s\n         WHERE ends_at <= now() AND closed_at IS NULL\n           AND NOT EXISTS (\n               SELECT 1 FROM rounds r JOIN ranked_accounts a ON a.id = r.context_id\n               WHERE r.kind = 'ranked' AND r.status = 'active' AND a.season_id = s.id\n           )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "seasons",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e1c71f3371c067dcd119fc03551205fc4f0fc253564e415452763d4bb09059fa"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, context_id, bet, state AS \"state: Jsonb<Round>\", status\n           FROM rounds WHERE id = $1 AND user_id = $2 FOR UPDATE",
+  "query": "SELECT id, kind, context_id, bet, state AS \"state: Jsonb<Round>\", status\n           FROM rounds WHERE user_id = $1 AND status = 'active'",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rounds",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "context_id",
         "type_info": "Uuid",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "bet",
         "type_info": "Int8",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "state: Jsonb<Round>",
         "type_info": "Jsonb",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -61,7 +72,6 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -70,8 +80,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "f4d1a0f0deb2a02b98aef0d68c0bdb8edb8675770a4baf44cbeb49b84aa4cedd"
+  "hash": "1b08214c81e06f3d39bd31a7d985d61796ce77776c1fca9cb78496db5e632f77"
 }
