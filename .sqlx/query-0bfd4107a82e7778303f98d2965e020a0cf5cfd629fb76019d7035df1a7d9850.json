@@ -1,0 +1,137 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, day, shoe AS \"shoe: Jsonb<GameShoe>\", shuffles, balance, peak, hands,\n                      status, started_at, finished_at\n               FROM daily_attempts WHERE user_id = $1 AND day = $2 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "day",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "day"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "shoe: Jsonb<GameShoe>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "shoe"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "shuffles",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "shuffles"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "balance",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "balance"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "peak",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "peak"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "hands",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "hands"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "finished_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "finished_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "0bfd4107a82e7778303f98d2965e020a0cf5cfd629fb76019d7035df1a7d9850"
+}

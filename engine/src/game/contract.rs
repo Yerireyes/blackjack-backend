@@ -115,6 +115,8 @@ pub enum RoundPhase {
 pub enum RoundKind {
     Casual,
     Ranked,
+    /// Reto diario.
+    Daily,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -194,8 +196,8 @@ pub struct RoundView {
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 pub struct NewRoundRequest {
     pub kind: RoundKind,
-    /// Casual: id de la partida activa. Si falta, se usa la partida activa. Ranked:
-    /// se ignora; siempre es la cuenta de la temporada actual.
+    /// Casual: id de la partida activa. Si falta, se usa la partida activa. Ranked y
+    /// reto diario: se ignora; siempre es la cuenta de la temporada o el intento de hoy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub context_id: Option<String>,
@@ -359,6 +361,86 @@ pub struct CasualRecords {
 pub struct MyRecords {
     pub casual: CasualRecords,
     pub ranked: RankedRecords,
+    pub daily: DailyRecords,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum DailyAttemptStatus {
+    Active,
+    /// Jugó las 30 manos o el saldo quedó por debajo de la apuesta mínima.
+    Finished,
+}
+
+/// `POST /daily/attempts` y `GET /daily/me`: el intento del reto de hoy.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct DailyAttemptView {
+    pub id: String,
+    /// Día del reto, `"AAAA-MM-DD"` (UTC).
+    pub day: String,
+    pub status: DailyAttemptStatus,
+    pub balance: i64,
+    pub peak: i64,
+    /// Manos (rondas) liquidadas.
+    pub hands: u32,
+    /// Manos del reto (30).
+    pub hands_total: u32,
+    /// Apuesta máxima para la próxima ronda (0 si terminó).
+    pub max_bet: i64,
+    /// Fracción del zapato ya repartida.
+    pub penetration: f64,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct DailyRow {
+    /// Posición entre los intentos terminados, desde 1. Empates comparten posición. Si
+    /// el intento no terminó, es la que tendría con ese saldo.
+    pub rank: u32,
+    pub display_name: String,
+    pub balance: i64,
+    pub hands: u32,
+    /// Terminó el intento (solo los terminados entran en `top`).
+    pub finished: bool,
+    pub is_me: bool,
+}
+
+/// `GET /daily/leaderboard?day=AAAA-MM-DD`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct DailyLeaderboard {
+    pub day: String,
+    /// Los 100 primeros por saldo final.
+    pub top: Vec<DailyRow>,
+    /// La fila del usuario, si jugó ese día (aunque esté en `top`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub me: Option<DailyRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct DailyRecords {
+    /// Retos terminados.
+    pub finished: u32,
+    /// Mejor saldo final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub best_balance: Option<i64>,
+    /// Mejor posición final en un día ya cerrado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub best_rank: Option<u32>,
 }
 
 /// Medalla de fin de temporada (solo con el mínimo de manos).

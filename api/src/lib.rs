@@ -107,7 +107,7 @@ async fn not_found() -> ApiError {
 
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
-    use routes::{analyze, auth, casual, google, play, ranked, sessions};
+    use routes::{analyze, auth, casual, daily, google, play, ranked, sessions};
 
     let analyze_routes = Router::new()
         .route("/analyze/hand", post(analyze::hand))
@@ -128,6 +128,7 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
     let play_routes = Router::new()
         .route("/casual/runs", post(casual::create_run))
         .route("/casual/runs/{id}/retire", post(casual::retire))
+        .route("/daily/attempts", post(daily::start))
         .route("/play/rounds", post(play::deal))
         .route("/play/rounds/{id}/actions", post(play::act))
         .layer(GovernorLayer::new(limits.play.clone()).error_handler(rate_limited));
@@ -141,6 +142,8 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/me/records", get(casual::records))
         .route("/ranked/me", get(ranked::me))
         .route("/ranked/leaderboard", get(ranked::leaderboard))
+        .route("/daily/me", get(daily::me))
+        .route("/daily/leaderboard", get(daily::leaderboard))
         .route("/play/active", get(play::active))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/logout-all", post(auth::logout_all))

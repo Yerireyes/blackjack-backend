@@ -25,6 +25,9 @@ pub struct Config {
     pub trusted_proxies: Vec<IpAddr>,
     /// Login con Google; `None` si faltan las variables (queda deshabilitado).
     pub google: Option<GoogleConfig>,
+    /// Clave de la semilla del reto diario (`DAILY_SEED_SECRET`). `None`: se deriva de
+    /// `JWT_SECRET`.
+    pub daily_seed_secret: Option<Vec<u8>>,
 }
 
 /// Cliente OAuth de Google. Las URLs de Google se pueden cambiar para los tests.
@@ -107,6 +110,10 @@ impl Config {
         if jwt_secret.len() < 32 {
             return Err("JWT_SECRET debe tener al menos 32 caracteres".into());
         }
+        let daily_seed_secret = var_opt("DAILY_SEED_SECRET").map(String::into_bytes);
+        if daily_seed_secret.as_ref().is_some_and(|s| s.len() < 32) {
+            return Err("DAILY_SEED_SECRET debe tener al menos 32 caracteres".into());
+        }
         Ok(Config {
             database_url: var("DATABASE_URL")?,
             jwt_secret,
@@ -119,6 +126,7 @@ impl Config {
             play_burst: var_or("PLAY_BURST", 10)?,
             trusted_proxies: trusted_proxies()?,
             google: GoogleConfig::from_env()?,
+            daily_seed_secret,
         })
     }
 }

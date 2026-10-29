@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod auth;
 pub mod casual;
+pub mod daily;
 pub mod google;
 pub mod play;
 pub mod ranked;

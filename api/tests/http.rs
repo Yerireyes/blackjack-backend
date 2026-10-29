@@ -37,6 +37,7 @@ fn config(analyze_burst: u32) -> Config {
         play_burst: 1000,
         trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
         google: None,
+        daily_seed_secret: None,
     }
 }
 
@@ -1539,7 +1540,7 @@ async fn casual_leaderboard_and_records(pool: PgPool) {
     let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
     assert_eq!(
         res.body,
-        json!({ "casual": { "runs": 0 }, "ranked": { "seasons": [] } })
+        json!({ "casual": { "runs": 0 }, "ranked": { "seasons": [] }, "daily": { "finished": 0 } })
     );
 
     let a1 = new_run(&app, &ana, "vegas").await;
@@ -1585,7 +1586,8 @@ async fn casual_leaderboard_and_records(pool: PgPool) {
         res.body,
         json!({
             "casual": { "runs": 2, "bestPeak": 900, "mostHands": 70 },
-            "ranked": { "seasons": [] }
+            "ranked": { "seasons": [] },
+            "daily": { "finished": 0 }
         })
     );
 }
@@ -1946,4 +1948,176 @@ async fn stale_rounds_are_closed_by_standing(pool: PgPool) {
     assert_eq!(res.body["hands"], 1);
     let res = act(&app, &ana, &round, "hit", &key()).await;
     assert_eq!(res.body["code"], "no_active_round");
+}
+
+// ---- Reto diario ----
+
+async fn daily_start(app: &Router, cookie: &str) -> Res {
+    send(app, "POST", "/api/v1/daily/attempts", None, Some(cookie)).await
+}
+
+async fn daily_deal(app: &Router, cookie: &str, bet: i64) -> Res {
+    send(
+        app,
+        "POST",
+        "/api/v1/play/rounds",
+        Some(json!({ "kind": "daily", "bet": bet, "idempotencyKey": key() })),
+        Some(cookie),
+    )
+    .await
+}
+
+async fn set_attempt(pool: &PgPool, attempt: &Value, sql_set: &str) {
+    // Solo con literales de los tests.
+    let sql = format!("UPDATE daily_attempts SET {sql_set} WHERE id = $1::uuid");
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(attempt["id"].as_str().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn daily_attempt_once_a_day(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+
+    let res = send(&app, "GET", "/api/v1/daily/me", None, Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+    assert_eq!(res.body["code"], "no_daily_attempt");
+    let res = daily_deal(&app, &ana, 10).await;
+    assert_eq!(res.body["code"], "no_daily_attempt");
+
+    let res = daily_start(&app, &ana).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    let attempt = res.body;
+    assert_eq!(attempt["day"].as_str().unwrap().len(), 10, "AAAA-MM-DD");
+    assert_eq!(attempt["status"], "active");
+    assert_eq!(attempt["balance"], 500);
+    assert_eq!(attempt["hands"], 0);
+    assert_eq!(attempt["handsTotal"], 30);
+    assert_eq!(attempt["maxBet"], 500);
+    let res = daily_start(&app, &ana).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "daily_taken");
+    let res = send(&app, "GET", "/api/v1/daily/me", None, Some(&ana)).await;
+    assert_eq!(res.body, attempt);
+
+    // El nombre sale en el ranking diario.
+    let beto = register(&app, "beto@example.com").await;
+    sqlx::query("UPDATE users SET display_name_set = false WHERE email = 'beto@example.com'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = daily_start(&app, &beto).await;
+    assert_eq!(res.body["code"], "display_name_required");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn daily_shoe_is_the_same_for_everyone(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    daily_start(&app, &ana).await;
+    daily_start(&app, &beto).await;
+
+    let a = daily_deal(&app, &ana, 10).await;
+    let b = daily_deal(&app, &beto, 50).await;
+    assert_eq!(a.status, StatusCode::CREATED, "{}", a.body);
+    assert_eq!(a.body["kind"], "daily");
+    assert_eq!(
+        a.body["player"]["hands"][0]["cards"],
+        b.body["player"]["hands"][0]["cards"]
+    );
+    assert_eq!(a.body["dealer"]["up"], b.body["dealer"]["up"]);
+    assert!(a.body.get("shoeCounts").is_none(), "sin ayudas en el reto");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn daily_attempt_ends_after_thirty_hands(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let attempt = daily_start(&app, &ana).await.body;
+    set_attempt(&pool, &attempt, "hands = 29").await;
+    // Jugador 10,7 contra 10 + oculta 10: se planta y pierde.
+    let shoe = serde_json::to_value(GameShoe::stacked(6, &[Ten, Ten, Seven, Ten])).unwrap();
+    sqlx::query("UPDATE daily_attempts SET shoe = $1")
+        .bind(shoe)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res = daily_deal(&app, &ana, 100).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    let round = res.body["id"].as_str().unwrap().to_string();
+    let res = act(&app, &ana, &round, "stand", &key()).await;
+    assert_eq!(res.body["phase"], "settled");
+    assert_eq!(res.body["result"]["net"], -100);
+    assert_eq!(res.body["result"]["review"][0]["chosen"], "stand");
+    assert_eq!(res.body["wallet"], json!({ "balance": 400, "maxBet": 0 }));
+
+    let res = send(&app, "GET", "/api/v1/daily/me", None, Some(&ana)).await;
+    assert_eq!(res.body["status"], "finished");
+    assert_eq!(res.body["hands"], 30);
+    assert!(res.body["finishedAt"].is_string());
+    let res = daily_deal(&app, &ana, 10).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "daily_finished");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn daily_leaderboard_and_records(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    let carla = register(&app, "carla@example.com").await;
+    let a = daily_start(&app, &ana).await.body;
+    let b = daily_start(&app, &beto).await.body;
+    let c = daily_start(&app, &carla).await.body;
+    set_attempt(&pool, &a, "balance = 900, hands = 30, status = 'finished'").await;
+    set_attempt(&pool, &b, "balance = 700, hands = 30, status = 'finished'").await;
+    // Más saldo, pero sin terminar: no entra en el top.
+    set_attempt(&pool, &c, "balance = 2000, hands = 10").await;
+
+    let uri = "/api/v1/daily/leaderboard";
+    let res = send(&app, "GET", uri, None, Some(&carla)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["day"], a["day"]);
+    assert_eq!(
+        res.body["top"],
+        json!([
+            { "rank": 1, "displayName": "ana", "balance": 900, "hands": 30,
+              "finished": true, "isMe": false },
+            { "rank": 2, "displayName": "beto", "balance": 700, "hands": 30,
+              "finished": true, "isMe": false }
+        ])
+    );
+    assert_eq!(
+        res.body["me"],
+        json!({ "rank": 1, "displayName": "carla", "balance": 2000, "hands": 10,
+                "finished": false, "isMe": true })
+    );
+    let res = send(&app, "GET", uri, None, None).await;
+    assert!(res.body.get("me").is_none());
+    let res = send(&app, "GET", &format!("{uri}?day=ayer"), None, None).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    let res = send(&app, "GET", &format!("{uri}?day=2020-01-01"), None, None).await;
+    assert_eq!(res.body["top"], json!([]));
+
+    // La mejor posición solo cuenta días ya terminados.
+    let res = send(&app, "GET", "/api/v1/me/records", None, Some(&ana)).await;
+    assert_eq!(
+        res.body["daily"],
+        json!({ "finished": 1, "bestBalance": 900 })
+    );
+    sqlx::query("UPDATE daily_attempts SET day = day - 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = send(&app, "GET", "/api/v1/me/records", None, Some(&beto)).await;
+    assert_eq!(
+        res.body["daily"],
+        json!({ "finished": 1, "bestBalance": 700, "bestRank": 2 })
+    );
 }
