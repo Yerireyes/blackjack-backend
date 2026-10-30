@@ -1,6 +1,12 @@
 # Front — Fase 5: Cosméticos
 
-**Versión del 2026-10-29 (primera).** Qué cambió respecto de lo que el front conoce:
+**Versión del 2026-10-29 (revisión 2).** Cambios respecto de la primera versión:
+
+- Las filas de los tres rankings (`LeaderboardRow`, `RankedRow`, `DailyRow`) traen
+  `title?: CosmeticId`: el título que el jugador lleva puesto. Mostrarlo junto al nombre
+  (sección 6).
+
+Primera versión (2026-10-29). Qué cambió respecto de lo que el front conocía:
 
 - Cosméticos desbloqueados por logros: **paño**, **dorso de las cartas**, **fichas** y
   **título**. Solo cambian cómo se ve la mesa: nunca dan fichas ni ventaja.
@@ -20,7 +26,7 @@ Este documento solo existe en `blackjack-backend/docs/`.
 |---|---|---|
 | Catálogo y desbloqueo por logros | Listo | Por hacer |
 | Elegir y guardar lo que se tiene puesto | Listo | Por hacer |
-| Título junto al nombre en los rankings | No existe | **No hacer** |
+| Título junto al nombre en los rankings | Listo (revisión 2) | Por hacer |
 
 ---
 
@@ -80,6 +86,15 @@ tiene se pueden elegir; los bloqueados se ven atenuados con el logro que los des
 | `cosmetic_locked` | «Todavía no lo desbloqueaste.» (y recargar `GET /me/cosmetics`) |
 | `cosmetic_wrong_slot` | Error del front: no debería pasar. |
 
+### 6. Título en los rankings
+
+- Las filas de `GET /casual/leaderboard/weekly`, `GET /ranked/leaderboard` y
+  `GET /daily/leaderboard` (en `top` y en `me`) traen `title` si el jugador lleva uno. Falta
+  si no lleva.
+- Mostrarlo junto al `displayName`, con el mismo nombre que en la pantalla de cosméticos
+  («Ana · Cabeza fría»). Es el que lleva puesto **ahora**, también en temporadas o días
+  pasados.
+
 ---
 
 ## Qué NO hacer
@@ -88,7 +103,6 @@ tiene se pueden elegir; los bloqueados se ven atenuados con el logro que los des
   servidor para que se vea igual en otro dispositivo. Sin sesión sí se puede recordar en el
   navegador.
 - **No dar ventaja con un cosmético** (ni mostrar ayudas en Ranked por llevar uno).
-- **No mostrar el título en los rankings** todavía: el backend no lo manda en las filas.
 - **No editar `contract.ts` a mano.**
 
 ## Probar
