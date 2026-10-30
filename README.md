@@ -296,6 +296,10 @@ estrategia, con re-división real):
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas | Sí |
 | GET | `/cosmetics` | Catálogo de cosméticos y el logro que desbloquea cada uno | No |
 | GET · PUT | `/me/cosmetics` | Cosméticos que tiene y los que tiene puestos | Sí |
+| POST | `/rooms` | Crea una sala multijugador (pública o privada) | Sí |
+| GET | `/rooms` | Salas públicas | No |
+| GET | `/rooms/{code}` | Una sala por su código | No |
+| GET | `/rooms/{code}/ws` | WebSocket de la sala (jugar, mirar, reaccionar) | Sí |
 | GET | `/me/records` | Récords de Casual y resultados de Ranked | Sí |
 | GET | `/health` | Estado del servicio y de la base | No |
 
@@ -328,6 +332,12 @@ estrategia, con re-división real):
   Lo que el usuario tiene se deriva de sus logros; solo se guarda lo que tiene puesto.
   Catálogo en la sección 8.5 y, para el front, en
   [docs/Front — Fase 5 Cosméticos.md](docs/).
+- **Salas multijugador:** mesas de 5 a 7 asientos (más hasta 10 espectadores) por
+  WebSocket, con pila propia por sala, turnos de 20 s, reacciones y un ranking interno que
+  vive en memoria mientras exista la sala (`api/src/rooms/`). Una sola instancia del backend:
+  si se reinicia, las salas desaparecen. Hasta `MAX_ROOMS` (200) salas a la vez. Detalle en
+  [docs/Especificación — Salas Casual.md](docs/) y, para el front, en
+  [docs/Front — Salas Casual.md](docs/).
 - **Migraciones en LF:** `.gitattributes` fija `api/migrations/*.sql` en LF. sqlx guarda el
   checksum de cada migración aplicada y, con `core.autocrlf`, un archivo reescrito con CRLF
   parecería modificado.
@@ -391,6 +401,11 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # WebSocket de las salas (/api/v1/rooms/{code}/ws).
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 120s;
     }
 
     location / {
@@ -399,6 +414,11 @@ server {
     }
 }
 ```
+
+Para `$connection_upgrade`, en el bloque `http` de Nginx:
+`map $http_upgrade $connection_upgrade { default upgrade; '' close; }`. Caddy pasa el
+WebSocket solo. El servidor manda un ping cada 30 s, así que `proxy_read_timeout` de 120 s
+alcanza.
 
 `/api/...` no lleva barra final en `proxy_pass`, así la ruta llega completa a la API. El
 `.wasm` del motor debe servirse con `Content-Type: application/wasm` (Caddy y Nginx ya lo
