@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.balance, d.hands, d.status, u.display_name,\n                      1 + (SELECT count(*) FROM daily_attempts o\n                           WHERE o.day = d.day AND o.status = 'finished'\n                             AND o.balance > d.balance) AS \"pos!\"\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               WHERE d.day = $1 AND d.user_id = $2",
+  "query": "SELECT d.balance, d.hands, d.status, u.display_name, c.title AS \"title?\",\n                      1 + (SELECT count(*) FROM daily_attempts o\n                           WHERE o.day = d.day AND o.status = 'finished'\n                             AND o.balance > d.balance) AS \"pos!\"\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id\n               WHERE d.day = $1 AND d.user_id = $2",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "pos!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -65,8 +76,9 @@
       false,
       false,
       false,
+      true,
       null
     ]
   },
-  "hash": "c5498be5c38e2a9fb875e69162e8b76d4903b8d62d58ea47964a6e54c7ac9820"
+  "hash": "c653cfb5cbefb1dfecdcfe295cab5934ca4660f17e9816a7beee640b16a2d10d"
 }

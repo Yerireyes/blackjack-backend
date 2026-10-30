@@ -576,8 +576,9 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
 - **Lo que tiene puesto** va en `user_cosmetics`; sin fila, los de serie y sin título.
   `PUT /me/cosmetics` reemplaza los cuatro a la vez: 400 `cosmetic_wrong_slot` si uno no va
   en ese lugar, 409 `cosmetic_locked` si no lo desbloqueó.
-- **Títulos en los rankings:** todavía no salen junto al nombre en las filas de los
-  rankings; hoy solo los ve el propio usuario.
+- **Títulos en los rankings:** las filas de los tres rankings (`LeaderboardRow`,
+  `RankedRow`, `DailyRow`) traen `title` con el título equipado, si hay uno. Es el que lleva
+  puesto ahora, no el que tenía cuando jugó.
 
 ---
 

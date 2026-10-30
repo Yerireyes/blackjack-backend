@@ -422,8 +422,8 @@ mazos tarda ~1–2 ms.
 
 ## Pendiente
 
-- Resto de la fase 5: login con Facebook. Los títulos todavía no salen en los rankings y la
-  racha de decisiones óptimas no cuenta Casual (secciones 8.5 y 8.1).
+- Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
+  óptimas no cuenta Casual (sección 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
 - CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
   benchmarks (> 20 %).

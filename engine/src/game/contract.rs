@@ -408,6 +408,10 @@ pub struct LeaderboardRow {
     /// Posición, desde 1. Empates comparten posición.
     pub rank: u32,
     pub display_name: String,
+    /// Título equipado (cosmético), si lleva uno.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub title: Option<CosmeticId>,
     /// Casual semanal: el mejor pico de la semana.
     pub value: i64,
     pub is_me: bool,
@@ -495,6 +499,10 @@ pub struct DailyRow {
     /// el intento no terminó, es la que tendría con ese saldo.
     pub rank: u32,
     pub display_name: String,
+    /// Título equipado (cosmético), si lleva uno.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub title: Option<CosmeticId>,
     pub balance: i64,
     pub hands: u32,
     /// Terminó el intento (solo los terminados entran en `top`).
@@ -580,6 +588,10 @@ pub struct RankedRow {
     /// posición. Si `provisional`, es la que tendría con esa ganancia.
     pub rank: u32,
     pub display_name: String,
+    /// Título equipado (cosmético), si lleva uno.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub title: Option<CosmeticId>,
     pub net: i64,
     pub hands: u32,
     /// Todavía no tiene el mínimo de manos (solo puede pasar en `me`).
