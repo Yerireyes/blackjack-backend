@@ -288,7 +288,8 @@ fn round_view(id: Uuid, bet: i64, round: &Round, wallet: &Wallet, settled: Settl
 
 fn game_error(e: GameError) -> ApiError {
     match e {
-        GameError::ActionNotAllowed => ApiError::new(
+        // NotYourTurn solo existe en las mesas de las salas.
+        GameError::ActionNotAllowed | GameError::NotYourTurn => ApiError::new(
             StatusCode::CONFLICT,
             "action_not_allowed",
             "esa acción no está permitida ahora",

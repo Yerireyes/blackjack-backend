@@ -55,6 +55,44 @@ pub struct HandView {
     pub net: Option<i64>,
 }
 
+/// Un asiento en la ronda de una sala.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct SeatRoundView {
+    /// Número de asiento, desde 1.
+    pub seat: u8,
+    pub bet: i64,
+    pub hands: Vec<HandView>,
+    /// Mano que se está jugando (tras dividir hay varias).
+    pub active: u32,
+    /// Ya no decide en esta ronda.
+    pub done: bool,
+    /// Neto del asiento en fichas (solo liquidada).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub net: Option<i64>,
+}
+
+/// La ronda de una sala: todos los asientos contra el dealer. Nunca incluye la oculta
+/// sin revelar ni el orden del zapato.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct TableRoundView {
+    pub phase: RoundPhase,
+    /// Solo los asientos que apostaron, en orden.
+    pub seats: Vec<SeatRoundView>,
+    pub dealer: DealerView,
+    /// Asiento al que le toca decidir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub turn: Option<u8>,
+    /// Acciones del asiento en turno.
+    pub allowed: AllowedActions,
+    pub peek_blackjack: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
@@ -720,4 +758,226 @@ pub struct MyCosmetics {
     /// Los que tiene (los de serie y los de sus logros), en el orden del catálogo.
     pub owned: Vec<CosmeticId>,
     pub equipped: EquippedCosmetics,
+}
+
+// ---- Salas Casual (multijugador) ----
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum RoomVisibility {
+    /// Aparece en `GET /rooms`.
+    Public,
+    /// Solo con el código.
+    Private,
+}
+
+/// `POST /rooms`. Las reglas: un preset o personalizadas (exactamente uno).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct CreateRoomRequest {
+    /// 3–30 caracteres.
+    pub name: String,
+    pub visibility: RoomVisibility,
+    /// Asientos: 5, 6 o 7.
+    pub seats: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub preset: Option<Preset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub rules: Option<Rules>,
+    /// Con ayudas, el estado trae `shoeCounts` para calcular EV en el navegador.
+    pub aids: bool,
+}
+
+/// Una sala, para el lobby y la invitación.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RoomInfo {
+    /// Código de 6 caracteres; también es el enlace de invitación.
+    pub code: String,
+    pub name: String,
+    pub visibility: RoomVisibility,
+    /// Nombre visible del anfitrión.
+    pub host: String,
+    /// Asientos de la mesa.
+    pub seats: u8,
+    /// Asientos ocupados.
+    pub seated: u8,
+    pub spectators: u8,
+    /// Máximo de espectadores.
+    pub max_spectators: u8,
+    pub rules: Rules,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub preset: Option<Preset>,
+    pub aids: bool,
+    pub created_at: String,
+}
+
+/// Reacciones (no hay chat de texto).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum Reaction {
+    ThumbsUp,
+    Clap,
+    Laugh,
+    Wow,
+    Sad,
+    Fire,
+    Cool,
+    Gg,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum RoomPhase {
+    /// Nadie sentado.
+    Waiting,
+    /// Los sentados apuestan.
+    Betting,
+    /// Turnos de los jugadores.
+    Playing,
+    /// Resultados de la ronda, antes de las siguientes apuestas.
+    Results,
+}
+
+/// Alguien en la sala.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RoomPlayer {
+    /// Identifica al usuario en la sala (para `kick` y las reacciones).
+    pub id: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub title: Option<CosmeticId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RoomSeat {
+    /// Desde 1.
+    pub seat: u8,
+    /// Falta si el asiento está libre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub player: Option<RoomPlayer>,
+    /// Pila del jugador sentado.
+    pub stack: i64,
+    /// Tiene al menos una conexión abierta.
+    pub connected: bool,
+    /// Apuesta ya hecha en esta ronda (en `betting`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub bet: Option<i64>,
+}
+
+/// Ranking interno: vive mientras viva la sala.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RoomLeaderboardRow {
+    pub player: RoomPlayer,
+    /// Pila − 500 × compras.
+    pub net: i64,
+    pub hands: u32,
+    pub buy_ins: u32,
+}
+
+/// Todo lo que se ve de la sala. Llega en cada cambio: reemplazar el estado local.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RoomState {
+    pub info: RoomInfo,
+    pub host_id: String,
+    pub seats: Vec<RoomSeat>,
+    pub spectators: Vec<RoomPlayer>,
+    pub phase: RoomPhase,
+    /// Milisegundos que le quedan al temporizador (apuestas, turno o resultados).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub timer_ms: Option<u32>,
+    /// La ronda en juego o la última (en `results`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub round: Option<TableRoundView>,
+    /// Solo con ayudas: cartas sin ver por rango (0 = As … 9 = diez).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub shoe_counts: Option<[u16; 10]>,
+    /// Fracción del zapato ya repartida.
+    pub penetration: f64,
+    pub leaderboard: Vec<RoomLeaderboardRow>,
+}
+
+/// Mensajes del cliente por el WebSocket de la sala.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum ClientMessage {
+    /// Sentarse en un asiento libre.
+    Sit {
+        seat: u8,
+    },
+    /// Volver a espectador (no con la mano en juego).
+    LeaveSeat,
+    Bet {
+        amount: i64,
+    },
+    Action {
+        action: Action,
+    },
+    /// Con menos de 10, volver a 500.
+    Rebuy,
+    React {
+        reaction: Reaction,
+    },
+    /// Solo el anfitrión: echar a alguien (no puede volver).
+    Kick {
+        player_id: String,
+    },
+}
+
+/// Mensajes del servidor por el WebSocket de la sala.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum ServerMessage {
+    /// Al conectar: quién es el usuario en la sala.
+    Welcome {
+        player_id: String,
+    },
+    State {
+        room: RoomState,
+    },
+    Reaction {
+        player_id: String,
+        reaction: Reaction,
+    },
+    /// Una orden rechazada; la conexión sigue.
+    Error {
+        code: String,
+        message: String,
+    },
+    /// La sala cerró o echaron al usuario; después se cierra la conexión.
+    Closed {
+        reason: String,
+    },
 }

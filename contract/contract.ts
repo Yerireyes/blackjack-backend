@@ -2,6 +2,18 @@
 // No editar a mano: npm run gen:contract
 
 /**
+ * Alguien en la sala.
+ */
+export interface RoomPlayer {
+    /**
+     * Identifica al usuario en la sala (para `kick` y las reacciones).
+     */
+    id: string;
+    displayName: string;
+    title?: CosmeticId;
+}
+
+/**
  * Carta visible: figura y palo.
  */
 export interface CardView {
@@ -30,6 +42,28 @@ export type RoundPhase = "player" | "settled";
  * Figura de la carta, como la escribe el front: "A", "2" … "10", "J", "Q", "K".
  */
 export type Face = "A" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "J" | "Q" | "K";
+
+/**
+ * La ronda de una sala: todos los asientos contra el dealer. Nunca incluye la oculta
+ * sin revelar ni el orden del zapato.
+ */
+export interface TableRoundView {
+    phase: RoundPhase;
+    /**
+     * Solo los asientos que apostaron, en orden.
+     */
+    seats: SeatRoundView[];
+    dealer: DealerView;
+    /**
+     * Asiento al que le toca decidir.
+     */
+    turn?: number;
+    /**
+     * Acciones del asiento en turno.
+     */
+    allowed: AllowedActions;
+    peekBlackjack: boolean;
+}
 
 /**
  * Lo que el usuario tiene puesto. `PUT /me/cosmetics` lo reemplaza entero.
@@ -92,6 +126,16 @@ export type AchievementId = "firstWin" | "blackjack" | "perfectSplit" | "optimal
 export type Medal = "gold" | "silver" | "bronze" | "top10";
 
 /**
+ * Mensajes del cliente por el WebSocket de la sala.
+ */
+export type ClientMessage = { type: "sit"; seat: number } | { type: "leaveSeat" } | { type: "bet"; amount: number } | { type: "action"; action: Action } | { type: "rebuy" } | { type: "react"; reaction: Reaction } | { type: "kick"; playerId: string };
+
+/**
+ * Mensajes del servidor por el WebSocket de la sala.
+ */
+export type ServerMessage = { type: "welcome"; playerId: string } | { type: "state"; room: RoomState } | { type: "reaction"; playerId: string; reaction: Reaction } | { type: "error"; code: string; message: string } | { type: "closed"; reason: string };
+
+/**
  * Qué acciones permite la situación de la mesa (el front puede restringir más).
  */
 export interface Allowed {
@@ -107,6 +151,24 @@ export interface Allowed {
 export type Rank = number;
 
 /**
+ * Ranking interno: vive mientras viva la sala.
+ */
+export interface RoomLeaderboardRow {
+    player: RoomPlayer;
+    /**
+     * Pila − 500 × compras.
+     */
+    net: number;
+    hands: number;
+    buyIns: number;
+}
+
+/**
+ * Reacciones (no hay chat de texto).
+ */
+export type Reaction = "thumbsUp" | "clap" | "laugh" | "wow" | "sad" | "fire" | "cool" | "gg";
+
+/**
  * Resultado final en una temporada cerrada.
  */
 export interface SeasonResult {
@@ -115,6 +177,58 @@ export interface SeasonResult {
     net: number;
     hands: number;
     medal?: Medal;
+}
+
+/**
+ * Todo lo que se ve de la sala. Llega en cada cambio: reemplazar el estado local.
+ */
+export interface RoomState {
+    info: RoomInfo;
+    hostId: string;
+    seats: RoomSeat[];
+    spectators: RoomPlayer[];
+    phase: RoomPhase;
+    /**
+     * Milisegundos que le quedan al temporizador (apuestas, turno o resultados).
+     */
+    timerMs?: number;
+    /**
+     * La ronda en juego o la última (en `results`).
+     */
+    round?: TableRoundView;
+    /**
+     * Solo con ayudas: cartas sin ver por rango (0 = As … 9 = diez).
+     */
+    shoeCounts?: [number, number, number, number, number, number, number, number, number, number];
+    /**
+     * Fracción del zapato ya repartida.
+     */
+    penetration: number;
+    leaderboard: RoomLeaderboardRow[];
+}
+
+/**
+ * Un asiento en la ronda de una sala.
+ */
+export interface SeatRoundView {
+    /**
+     * Número de asiento, desde 1.
+     */
+    seat: number;
+    bet: number;
+    hands: HandView[];
+    /**
+     * Mano que se está jugando (tras dividir hay varias).
+     */
+    active: number;
+    /**
+     * Ya no decide en esta ronda.
+     */
+    done: boolean;
+    /**
+     * Neto del asiento en fichas (solo liquidada).
+     */
+    net?: number;
 }
 
 /**
@@ -127,6 +241,39 @@ export interface CosmeticItem {
      * El logro que lo desbloquea; falta en los que vienen de serie.
      */
     unlockedBy?: AchievementId;
+}
+
+/**
+ * Una sala, para el lobby y la invitación.
+ */
+export interface RoomInfo {
+    /**
+     * Código de 6 caracteres; también es el enlace de invitación.
+     */
+    code: string;
+    name: string;
+    visibility: RoomVisibility;
+    /**
+     * Nombre visible del anfitrión.
+     */
+    host: string;
+    /**
+     * Asientos de la mesa.
+     */
+    seats: number;
+    /**
+     * Asientos ocupados.
+     */
+    seated: number;
+    spectators: number;
+    /**
+     * Máximo de espectadores.
+     */
+    maxSpectators: number;
+    rules: Rules;
+    preset?: Preset;
+    aids: boolean;
+    createdAt: string;
 }
 
 /**
@@ -324,6 +471,27 @@ export interface NewRoundRequest {
      * UUID generado por el cliente; repetirlo devuelve la misma respuesta.
      */
     idempotencyKey: string;
+}
+
+/**
+ * `POST /rooms`. Las reglas: un preset o personalizadas (exactamente uno).
+ */
+export interface CreateRoomRequest {
+    /**
+     * 3–30 caracteres.
+     */
+    name: string;
+    visibility: RoomVisibility;
+    /**
+     * Asientos: 5, 6 o 7.
+     */
+    seats: number;
+    preset?: Preset;
+    rules?: Rules;
+    /**
+     * Con ayudas, el estado trae `shoeCounts` para calcular EV en el navegador.
+     */
+    aids: boolean;
 }
 
 export interface ActionResult {
@@ -605,6 +773,29 @@ export interface ReviewItem {
     exact: boolean;
 }
 
+export interface RoomSeat {
+    /**
+     * Desde 1.
+     */
+    seat: number;
+    /**
+     * Falta si el asiento está libre.
+     */
+    player?: RoomPlayer;
+    /**
+     * Pila del jugador sentado.
+     */
+    stack: number;
+    /**
+     * Tiene al menos una conexión abierta.
+     */
+    connected: boolean;
+    /**
+     * Apuesta ya hecha en esta ronda (en `betting`).
+     */
+    bet?: number;
+}
+
 export interface RoundResult {
     /**
      * Neto de la ronda en fichas.
@@ -669,6 +860,10 @@ export type DoubleOn = "any" | "nineToEleven" | "tenToEleven";
 export type HandOutcome = "blackjack" | "win" | "push" | "lose" | "bust" | "surrender";
 
 export type Preset = "vegas" | "europe" | "sixToFive";
+
+export type RoomPhase = "waiting" | "betting" | "playing" | "results";
+
+export type RoomVisibility = "public" | "private";
 
 export type RoundKind = "casual" | "ranked" | "daily";
 
