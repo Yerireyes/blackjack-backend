@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::auth::JwtKeys;
 use crate::config::{Config, GoogleConfig};
+use crate::rooms::{Rooms, RoomsConfig};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +23,8 @@ pub struct AppState {
     pub cookie_key: Key,
     /// Clave HMAC de la semilla del reto diario. Secreta: con ella se sabría el zapato.
     pub daily_seed: Arc<[u8]>,
+    /// Salas multijugador (en memoria).
+    pub rooms: Arc<Rooms>,
 }
 
 /// Cliente OAuth de Google con su cliente HTTP.
@@ -61,6 +64,7 @@ impl AppState {
             google,
             cookie_key,
             daily_seed,
+            rooms: Arc::new(Rooms::new(RoomsConfig::new(cfg.max_rooms))),
         }
     }
 }

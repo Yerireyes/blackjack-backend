@@ -30,7 +30,7 @@ pub struct PlayerHand {
 }
 
 impl PlayerHand {
-    fn new(cards: Vec<Card>) -> PlayerHand {
+    pub(super) fn new(cards: Vec<Card>) -> PlayerHand {
         PlayerHand {
             cards,
             from_split: false,
@@ -43,11 +43,11 @@ impl PlayerHand {
         }
     }
 
-    fn locked_split_aces(&self, rules: &Rules) -> bool {
+    pub(super) fn locked_split_aces(&self, rules: &Rules) -> bool {
         self.split_aces && !rules.hit_split_aces
     }
 
-    fn is_live(&self) -> bool {
+    pub(super) fn is_live(&self) -> bool {
         let v = hand_value(&self.cards, self.from_split);
         !self.surrendered && !v.bust && !v.blackjack
     }
@@ -62,13 +62,22 @@ pub struct Dealer {
 }
 
 impl Dealer {
-    fn cards(&self) -> Vec<Card> {
+    pub(super) fn cards(&self) -> Vec<Card> {
         let mut cards = vec![self.up, self.hole];
         cards.extend(&self.hits);
         cards
     }
 
-    fn must_hit(&self, rules: &Rules) -> bool {
+    /// Lo que se ve del dealer: la oculta solo cuando se revela.
+    pub fn view(&self) -> DealerView {
+        DealerView {
+            up: self.up.into(),
+            hole: self.hole_revealed.then(|| self.hole.into()),
+            hits: self.hits.iter().map(|&c| c.into()).collect(),
+        }
+    }
+
+    pub(super) fn must_hit(&self, rules: &Rules) -> bool {
         let v = hand_value(&self.cards(), false);
         !v.blackjack && !v.bust && !dealer_stands(rules, v.total, v.soft)
     }
@@ -80,7 +89,7 @@ fn dealer_stands(rules: &Rules, total: u8, soft: bool) -> bool {
 }
 
 /// Con peek, el dealer revisa la oculta si la visible es As o vale 10.
-fn dealer_checks_hole(rules: &Rules, up: Rank) -> bool {
+pub(super) fn dealer_checks_hole(rules: &Rules, up: Rank) -> bool {
     rules.dealer_peeks && (up.is_ace() || up == Rank::TEN)
 }
 
@@ -144,43 +153,10 @@ impl Round {
     /// Acciones de la mano activa. `spare`: unidades de apuesta extra que el saldo
     /// cubre; doblar y dividir necesitan una.
     pub fn allowed(&self, rules: &Rules, spare: u32) -> AllowedActions {
-        let none = AllowedActions::default();
         if self.phase != Phase::Player {
-            return none;
+            return AllowedActions::default();
         }
-        let Some(h) = self.hands.get(self.active) else {
-            return none;
-        };
-        if h.done || h.cards.len() < 2 {
-            return none;
-        }
-        let v = hand_value(&h.cards, h.from_split);
-        if v.bust || v.blackjack {
-            return none;
-        }
-        let two = h.cards.len() == 2;
-        let locked = h.locked_split_aces(rules);
-        let pair = is_pair(&h.cards);
-        AllowedActions {
-            hit: !locked && v.total < 21,
-            stand: true,
-            double: two
-                && spare >= 1
-                && !h.doubled
-                && !locked
-                && rules.can_double_total(v.total, v.soft)
-                && (!h.from_split || rules.double_after_split),
-            split: two
-                && spare >= 1
-                && pair.is_some()
-                && self.hands.len() < rules.max_split_hands as usize
-                && !(pair == Some(Rank::ACE) && h.split_aces && !rules.resplit_aces),
-            surrender: two
-                && rules.surrender == Surrender::Late
-                && rules.dealer_peeks
-                && !h.from_split
-                && self.hands.len() == 1,
-        }
+        hands_allowed(&self.hands, self.active, rules, spare)
     }
 
     /// La decisión pendiente tal como la ve el jugador, para `analyze_hand`: sus
@@ -242,85 +218,17 @@ impl Round {
         if !self.allowed(rules, spare).get(action) {
             return Err(GameError::ActionNotAllowed);
         }
-        let i = self.active;
-        let h = &mut self.hands[i];
-        match action {
-            Action::Hit => {
-                h.cards.push(shoe.draw()?);
-                let v = hand_value(&h.cards, h.from_split);
-                if v.bust || v.total == 21 {
-                    h.done = true;
-                }
-            }
-            Action::Stand => h.done = true,
-            Action::Double => {
-                h.doubled = true;
-                h.cards.push(shoe.draw()?);
-                h.done = true;
-            }
-            Action::Surrender => {
-                h.surrendered = true;
-                h.done = true;
-            }
-            Action::Split => {
-                let (a, b) = (h.cards[0], h.cards[1]);
-                let aces = a.rank().is_ace();
-                let half = |c: Card| PlayerHand {
-                    from_split: true,
-                    split_aces: aces,
-                    ..PlayerHand::new(vec![c])
-                };
-                let (mut h1, h2) = (half(a), half(b));
-                h1.cards.push(shoe.draw()?);
-                if h1.locked_split_aces(rules) || hand_value(&h1.cards, true).total == 21 {
-                    h1.done = true;
-                }
-                self.hands.splice(i..=i, [h1, h2]);
-            }
-        }
-        if self.hands[self.active].done {
-            self.advance(shoe, rules)?;
+        if apply_action(&mut self.hands, &mut self.active, action, shoe, rules)? {
+            self.play_dealer(shoe, rules)?;
         }
         Ok(())
     }
 
-    /// Pasa a la siguiente mano pendiente (dándole su segunda carta si viene de
-    /// dividir) o, si no queda ninguna, al turno del dealer.
-    fn advance(&mut self, shoe: &mut GameShoe, rules: &Rules) -> Result<(), GameError> {
-        for i in self.active..self.hands.len() {
-            let h = &mut self.hands[i];
-            if h.done {
-                continue;
-            }
-            self.active = i;
-            if h.cards.len() == 1 {
-                h.cards.push(shoe.draw()?);
-                if h.locked_split_aces(rules) || hand_value(&h.cards, true).total == 21 {
-                    h.done = true;
-                    continue;
-                }
-            }
-            return Ok(());
-        }
-        self.active = self.active.min(self.hands.len() - 1);
-        self.play_dealer(shoe, rules)
-    }
-
     /// Revela la oculta, pide si alguna mano sigue viva y liquida.
     fn play_dealer(&mut self, shoe: &mut GameShoe, rules: &Rules) -> Result<(), GameError> {
-        self.dealer.hole_revealed = true;
-        if self.hands.iter().any(PlayerHand::is_live) {
-            while self.dealer.must_hit(rules) {
-                self.dealer.hits.push(shoe.draw()?);
-            }
-        }
-        let dealer = self.dealer.cards();
-        for h in &mut self.hands {
-            let (outcome, net) = settle_hand(h, &dealer, rules);
-            h.outcome = Some(outcome);
-            h.net = Some(net);
-            h.done = true;
-        }
+        let live = self.hands.iter().any(PlayerHand::is_live);
+        play_dealer(&mut self.dealer, live, shoe, rules)?;
+        settle_hands(&mut self.hands, &self.dealer, rules);
         self.phase = Phase::Settled;
         Ok(())
     }
@@ -348,34 +256,180 @@ impl Round {
     /// Lo que el jugador puede ver de su mano y del dealer.
     pub fn player_view(&self, bet: i64) -> PlayerView {
         PlayerView {
-            hands: self
-                .hands
-                .iter()
-                .map(|h| HandView {
-                    cards: h.cards.iter().map(|&c| CardView::from(c)).collect(),
-                    doubled: h.doubled,
-                    surrendered: h.surrendered,
-                    from_split: h.from_split,
-                    outcome: h.outcome,
-                    net: h.net.map(|n| chips(n, bet)),
-                })
-                .collect(),
+            hands: self.hands.iter().map(|h| hand_view(h, bet)).collect(),
             active: self.active as u32,
         }
     }
 
     pub fn dealer_view(&self) -> DealerView {
-        DealerView {
-            up: self.dealer.up.into(),
-            hole: self.dealer.hole_revealed.then(|| self.dealer.hole.into()),
-            hits: self.dealer.hits.iter().map(|&c| c.into()).collect(),
-        }
+        self.dealer.view()
     }
 }
 
 /// `round(x)` como `Math.round` de JavaScript (los medios redondean hacia arriba).
-fn chips(units: f64, bet: i64) -> i64 {
+pub(super) fn chips(units: f64, bet: i64) -> i64 {
     (units * bet as f64 + 0.5).floor() as i64
+}
+
+/// Lo que el jugador ve de una mano, con el neto en fichas si ya se liquidó.
+pub(super) fn hand_view(h: &PlayerHand, bet: i64) -> HandView {
+    HandView {
+        cards: h.cards.iter().map(|&c| CardView::from(c)).collect(),
+        doubled: h.doubled,
+        surrendered: h.surrendered,
+        from_split: h.from_split,
+        outcome: h.outcome,
+        net: h.net.map(|n| chips(n, bet)),
+    }
+}
+
+/// Acciones de la mano `active` de un jugador (sus manos tras dividir). `spare`: unidades
+/// de apuesta extra que su saldo cubre; doblar y dividir necesitan una.
+pub(super) fn hands_allowed(
+    hands: &[PlayerHand],
+    active: usize,
+    rules: &Rules,
+    spare: u32,
+) -> AllowedActions {
+    let none = AllowedActions::default();
+    let Some(h) = hands.get(active) else {
+        return none;
+    };
+    if h.done || h.cards.len() < 2 {
+        return none;
+    }
+    let v = hand_value(&h.cards, h.from_split);
+    if v.bust || v.blackjack {
+        return none;
+    }
+    let two = h.cards.len() == 2;
+    let locked = h.locked_split_aces(rules);
+    let pair = is_pair(&h.cards);
+    AllowedActions {
+        hit: !locked && v.total < 21,
+        stand: true,
+        double: two
+            && spare >= 1
+            && !h.doubled
+            && !locked
+            && rules.can_double_total(v.total, v.soft)
+            && (!h.from_split || rules.double_after_split),
+        split: two
+            && spare >= 1
+            && pair.is_some()
+            && hands.len() < rules.max_split_hands as usize
+            && !(pair == Some(Rank::ACE) && h.split_aces && !rules.resplit_aces),
+        surrender: two
+            && rules.surrender == Surrender::Late
+            && rules.dealer_peeks
+            && !h.from_split
+            && hands.len() == 1,
+    }
+}
+
+/// Aplica una acción (ya validada) a la mano `active` y, si con ella termina, pasa a la
+/// siguiente mano pendiente. Devuelve `true` si al jugador no le queda ninguna.
+pub(super) fn apply_action(
+    hands: &mut Vec<PlayerHand>,
+    active: &mut usize,
+    action: Action,
+    shoe: &mut GameShoe,
+    rules: &Rules,
+) -> Result<bool, GameError> {
+    let i = *active;
+    let h = &mut hands[i];
+    match action {
+        Action::Hit => {
+            h.cards.push(shoe.draw()?);
+            let v = hand_value(&h.cards, h.from_split);
+            if v.bust || v.total == 21 {
+                h.done = true;
+            }
+        }
+        Action::Stand => h.done = true,
+        Action::Double => {
+            h.doubled = true;
+            h.cards.push(shoe.draw()?);
+            h.done = true;
+        }
+        Action::Surrender => {
+            h.surrendered = true;
+            h.done = true;
+        }
+        Action::Split => {
+            let (a, b) = (h.cards[0], h.cards[1]);
+            let aces = a.rank().is_ace();
+            let half = |c: Card| PlayerHand {
+                from_split: true,
+                split_aces: aces,
+                ..PlayerHand::new(vec![c])
+            };
+            let (mut h1, h2) = (half(a), half(b));
+            h1.cards.push(shoe.draw()?);
+            if h1.locked_split_aces(rules) || hand_value(&h1.cards, true).total == 21 {
+                h1.done = true;
+            }
+            hands.splice(i..=i, [h1, h2]);
+        }
+    }
+    if hands[*active].done {
+        return advance_hands(hands, active, shoe, rules);
+    }
+    Ok(false)
+}
+
+/// Pasa a la siguiente mano pendiente (dándole su segunda carta si viene de dividir).
+/// Devuelve `true` si no queda ninguna.
+pub(super) fn advance_hands(
+    hands: &mut [PlayerHand],
+    active: &mut usize,
+    shoe: &mut GameShoe,
+    rules: &Rules,
+) -> Result<bool, GameError> {
+    for i in *active..hands.len() {
+        let h = &mut hands[i];
+        if h.done {
+            continue;
+        }
+        *active = i;
+        if h.cards.len() == 1 {
+            h.cards.push(shoe.draw()?);
+            if h.locked_split_aces(rules) || hand_value(&h.cards, true).total == 21 {
+                h.done = true;
+                continue;
+            }
+        }
+        return Ok(false);
+    }
+    *active = (*active).min(hands.len() - 1);
+    Ok(true)
+}
+
+/// Revela la oculta y, si alguna mano sigue viva, pide según las reglas.
+pub(super) fn play_dealer(
+    dealer: &mut Dealer,
+    any_live: bool,
+    shoe: &mut GameShoe,
+    rules: &Rules,
+) -> Result<(), GameError> {
+    dealer.hole_revealed = true;
+    if any_live {
+        while dealer.must_hit(rules) {
+            dealer.hits.push(shoe.draw()?);
+        }
+    }
+    Ok(())
+}
+
+/// Liquida todas las manos de un jugador frente al dealer ya jugado.
+pub(super) fn settle_hands(hands: &mut [PlayerHand], dealer: &Dealer, rules: &Rules) {
+    let dealer = dealer.cards();
+    for h in hands {
+        let (outcome, net) = settle_hand(h, &dealer, rules);
+        h.outcome = Some(outcome);
+        h.net = Some(net);
+        h.done = true;
+    }
 }
 
 /// Liquida una mano frente al dealer, en unidades de la apuesta inicial.

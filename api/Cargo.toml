@@ -10,7 +10,7 @@ engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-axum = { version = "0.8.9", features = ["macros"] }
+axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-extra = { version = "0.12.6", features = ["cookie", "cookie-private"] }
 tokio = { version = "1.53.3", features = ["full"] }
 tower = { version = "0.5.3", features = ["util"] }
@@ -33,6 +33,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10.9"
 base64 = "0.22.1"
 unicode-normalization = "0.1.25"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 [dev-dependencies]
 http-body-util = "0.1.5"
+tokio-tungstenite = "0.29"

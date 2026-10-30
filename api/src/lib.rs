@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod extract;
 pub mod names;
+pub mod rooms;
 pub mod routes;
 pub mod state;
 
@@ -131,6 +132,7 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/casual/runs", post(casual::create_run))
         .route("/casual/runs/{id}/retire", post(casual::retire))
         .route("/daily/attempts", post(daily::start))
+        .route("/rooms", post(rooms::create))
         .route("/play/rounds", post(play::deal))
         .route("/play/rounds/{id}/actions", post(play::act))
         .layer(GovernorLayer::new(limits.play.clone()).error_handler(rate_limited));
@@ -144,6 +146,9 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/me/records", get(casual::records))
         .route("/me/achievements", get(achievements::mine))
         .route("/cosmetics", get(cosmetics::catalog))
+        .route("/rooms", get(rooms::list))
+        .route("/rooms/{code}", get(rooms::get))
+        .route("/rooms/{code}/ws", get(rooms::ws))
         .route("/me/cosmetics", get(cosmetics::mine).put(cosmetics::equip))
         .route("/ranked/me", get(ranked::me))
         .route("/ranked/leaderboard", get(ranked::leaderboard))
