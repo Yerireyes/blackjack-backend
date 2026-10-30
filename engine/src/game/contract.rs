@@ -157,6 +157,95 @@ pub struct RoundResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub review: Option<Vec<ReviewItem>>,
+    /// Logros desbloqueados con esta ronda (falta si no hubo ninguno).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub unlocked: Vec<AchievementId>,
+}
+
+/// Logros. Las condiciones están en «Front — Fase 5 Logros.md»; los textos los pone el
+/// front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum AchievementId {
+    /// Ganar una ronda.
+    FirstWin,
+    /// Sacar un blackjack natural.
+    Blackjack,
+    /// Dividir y ganar todas las manos de la ronda.
+    PerfectSplit,
+    /// 10 decisiones óptimas seguidas (Ranked o reto diario).
+    Optimal10,
+    /// 50 decisiones óptimas seguidas (Ranked o reto diario).
+    Optimal50,
+    /// Llegar a 50 manos en una partida casual que paga 6:5.
+    SixToFiveSurvivor,
+    /// Llegar a 1.000 fichas en una partida casual.
+    DoubleUp,
+    /// Llegar a 200 manos en una temporada ranked.
+    RankedQualified,
+    /// Terminar una temporada ranked con medalla.
+    RankedMedal,
+    /// Jugar las 30 manos del reto diario.
+    DailyComplete,
+}
+
+impl AchievementId {
+    pub const ALL: [AchievementId; 10] = [
+        AchievementId::FirstWin,
+        AchievementId::Blackjack,
+        AchievementId::PerfectSplit,
+        AchievementId::Optimal10,
+        AchievementId::Optimal50,
+        AchievementId::SixToFiveSurvivor,
+        AchievementId::DoubleUp,
+        AchievementId::RankedQualified,
+        AchievementId::RankedMedal,
+        AchievementId::DailyComplete,
+    ];
+
+    /// Nombre estable (el mismo del JSON), para guardarlo en la base.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AchievementId::FirstWin => "firstWin",
+            AchievementId::Blackjack => "blackjack",
+            AchievementId::PerfectSplit => "perfectSplit",
+            AchievementId::Optimal10 => "optimal10",
+            AchievementId::Optimal50 => "optimal50",
+            AchievementId::SixToFiveSurvivor => "sixToFiveSurvivor",
+            AchievementId::DoubleUp => "doubleUp",
+            AchievementId::RankedQualified => "rankedQualified",
+            AchievementId::RankedMedal => "rankedMedal",
+            AchievementId::DailyComplete => "dailyComplete",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<AchievementId> {
+        AchievementId::ALL.into_iter().find(|a| a.as_str() == s)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct UnlockedAchievement {
+    pub id: AchievementId,
+    /// RFC 3339.
+    pub unlocked_at: String,
+}
+
+/// `GET /me/achievements`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct MyAchievements {
+    /// Los desbloqueados, del más antiguo al más reciente.
+    pub unlocked: Vec<UnlockedAchievement>,
+    /// Decisiones óptimas seguidas ahora mismo (Ranked y reto diario).
+    pub optimal_streak: u32,
+    /// La mejor racha de decisiones óptimas.
+    pub best_optimal_streak: u32,
 }
 
 /// Lo único que el cliente ve de una ronda. Nunca incluye la oculta sin revelar ni

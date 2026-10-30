@@ -107,7 +107,7 @@ async fn not_found() -> ApiError {
 
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
-    use routes::{analyze, auth, casual, daily, google, play, ranked, sessions};
+    use routes::{achievements, analyze, auth, casual, daily, google, play, ranked, sessions};
 
     let analyze_routes = Router::new()
         .route("/analyze/hand", post(analyze::hand))
@@ -140,6 +140,7 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
             get(casual::weekly_leaderboard),
         )
         .route("/me/records", get(casual::records))
+        .route("/me/achievements", get(achievements::mine))
         .route("/ranked/me", get(ranked::me))
         .route("/ranked/leaderboard", get(ranked::leaderboard))
         .route("/daily/me", get(daily::me))

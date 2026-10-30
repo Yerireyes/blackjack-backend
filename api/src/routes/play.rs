@@ -9,8 +9,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use engine::game::{
-    GameError, GameShoe, NewRoundRequest, Round, RoundActionRequest, RoundKind, RoundPhase,
-    RoundResult, RoundView, WalletView,
+    AchievementId, GameError, GameShoe, NewRoundRequest, Round, RoundActionRequest, RoundKind,
+    RoundPhase, RoundResult, RoundView, WalletView,
 };
 use engine::{Action, Rules};
 use sqlx::types::Json as Jsonb;
@@ -21,13 +21,14 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiJson, ApiPath};
+use crate::routes::achievements::{self, Settlement, WalletFacts};
 use crate::routes::analyze::run_engine;
 use crate::routes::casual::{
     self, has_active_round, lock_active_run, lock_run, lock_user, no_active_run,
     require_display_name, round_active, run_finished, shuffled_shoe, Run, BET_STEP, MAX_BET,
     MIN_BET,
 };
-use crate::routes::daily::{lock_attempt, lock_today_attempt, Attempt};
+use crate::routes::daily::{self, lock_attempt, lock_today_attempt, Attempt};
 use crate::routes::ranked::{self, lock_account, lock_current_account, refill_pending, Account};
 use crate::state::AppState;
 
@@ -130,6 +131,21 @@ impl Wallet {
         }
     }
 
+    /// Lo que miran los logros, ya con la ronda liquidada.
+    fn facts(&self) -> WalletFacts<'_> {
+        match self {
+            Wallet::Casual(r) => WalletFacts::Casual {
+                rules: &r.rules,
+                hands: r.hands,
+                peak: r.peak,
+            },
+            Wallet::Ranked(a) => WalletFacts::Ranked { hands: a.hands },
+            Wallet::Daily(d) => WalletFacts::Daily {
+                completed: d.hands >= daily::HANDS,
+            },
+        }
+    }
+
     fn wallet_view(&self) -> WalletView {
         match self {
             Wallet::Casual(r) => WalletView {
@@ -211,15 +227,39 @@ fn spare_units(balance: i64, bet: i64, round: &Round) -> u32 {
     (free.max(0) / bet).min(u32::MAX as i64) as u32
 }
 
-/// Lo que ve el cliente. `wallet` ya refleja la liquidación si la ronda terminó;
-/// `refilled` es la recarga de esa liquidación.
-fn round_view(
-    id: Uuid,
-    bet: i64,
-    round: &Round,
-    wallet: &Wallet,
+/// Lo que trajo la liquidación además del neto.
+#[derive(Default)]
+struct Settled {
+    /// Recarga de Ranked.
     refilled: Option<i64>,
-) -> RoundView {
+    /// Logros nuevos.
+    unlocked: Vec<AchievementId>,
+}
+
+/// Aplica a la cartera el neto de la ronda recién liquidada y otorga los logros.
+async fn settle(
+    db: &mut PgConnection,
+    user_id: Uuid,
+    round: &Round,
+    bet: i64,
+    wallet: &mut Wallet,
+) -> ApiResult<Settled> {
+    let net = round.net_chips(bet);
+    let refilled = wallet.settle(net);
+    let settlement = Settlement {
+        kind: wallet.kind(),
+        round,
+        net,
+        wallet: wallet.facts(),
+    };
+    let unlocked = achievements::on_settle(db, user_id, &settlement).await?;
+    Ok(Settled { refilled, unlocked })
+}
+
+/// Lo que ve el cliente. `wallet` ya refleja la liquidación si la ronda terminó;
+/// `settled` es lo que trajo esa liquidación.
+fn round_view(id: Uuid, bet: i64, round: &Round, wallet: &Wallet, settled: Settled) -> RoundView {
+    let Settled { refilled, unlocked } = settled;
     let settled = round.phase == RoundPhase::Settled;
     let competitive = wallet.competitive();
     let shoe = wallet.shoe();
@@ -241,6 +281,7 @@ fn round_view(
             net: round.net_chips(bet),
             refilled,
             review: competitive.then(|| round.decisions.clone()),
+            unlocked,
         }),
     }
 }
@@ -365,13 +406,13 @@ pub async fn deal(
     let (shoe, rules) = wallet.table();
     let round = Round::deal(shoe, rules).map_err(game_error)?;
     let settled = round.phase == RoundPhase::Settled;
-    let refilled = if settled {
-        wallet.settle(round.net_chips(req.bet))
+    let outcome = if settled {
+        settle(&mut tx, user.id, &round, req.bet, &mut wallet).await?
     } else {
-        None
+        Settled::default()
     };
     let id = Uuid::new_v4();
-    let view = round_view(id, req.bet, &round, &wallet, refilled);
+    let view = round_view(id, req.bet, &round, &wallet, outcome);
     let now = OffsetDateTime::now_utc();
     sqlx::query!(
         "INSERT INTO rounds (id, user_id, kind, context_id, bet, state, status, net,
@@ -424,6 +465,7 @@ async fn lock_round(db: &mut PgConnection, user_id: Uuid, id: Uuid) -> ApiResult
 /// con su respuesta.
 async fn apply_action(
     db: &mut PgConnection,
+    user_id: Uuid,
     row: &RoundRow,
     round: &mut Round,
     wallet: &mut Wallet,
@@ -434,12 +476,12 @@ async fn apply_action(
     let (shoe, rules) = wallet.table();
     round.act(action, shoe, rules, spare).map_err(game_error)?;
     let settled = round.phase == RoundPhase::Settled;
-    let refilled = if settled {
-        wallet.settle(round.net_chips(row.bet))
+    let outcome = if settled {
+        settle(db, user_id, round, row.bet, wallet).await?
     } else {
-        None
+        Settled::default()
     };
-    let view = round_view(row.id, row.bet, round, wallet, refilled);
+    let view = round_view(row.id, row.bet, round, wallet, outcome);
     sqlx::query!(
         "UPDATE rounds SET state = $2, status = $3, net = $4, settled_at = $5 WHERE id = $1",
         row.id,
@@ -520,7 +562,16 @@ pub async fn act(
     let mut wallet = lock_wallet(&mut tx, user.id, &row.kind, row.context_id).await?;
     let mut round = row.state.0.clone();
     review_decision(&mut round, &wallet, row.bet, req.action).await;
-    let view = apply_action(&mut tx, &row, &mut round, &mut wallet, req.action, key).await?;
+    let view = apply_action(
+        &mut tx,
+        user.id,
+        &row,
+        &mut round,
+        &mut wallet,
+        req.action,
+        key,
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(view))
 }
@@ -544,7 +595,7 @@ pub async fn active(State(state): State<AppState>, user: AuthUser) -> ApiResult<
         row.bet,
         &row.state.0,
         &wallet,
-        None,
+        Settled::default(),
     )))
 }
 
@@ -575,6 +626,7 @@ pub async fn close_stale_rounds(pool: &PgPool) -> ApiResult<u64> {
         while round.phase == RoundPhase::Player {
             apply_action(
                 &mut tx,
+                r.user_id,
                 &row,
                 &mut round,
                 &mut wallet,

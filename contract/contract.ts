@@ -57,6 +57,12 @@ export interface RoundView {
 }
 
 /**
+ * Logros. Las condiciones están en «Front — Fase 5 Logros.md»; los textos los pone el
+ * front.
+ */
+export type AchievementId = "firstWin" | "blackjack" | "perfectSplit" | "optimal10" | "optimal50" | "sixToFiveSurvivor" | "doubleUp" | "rankedQualified" | "rankedMedal" | "dailyComplete";
+
+/**
  * Medalla de fin de temporada (solo con el mínimo de manos).
  */
 export type Medal = "gold" | "silver" | "bronze" | "top10";
@@ -118,6 +124,24 @@ export interface DailyLeaderboard {
      * La fila del usuario, si jugó ese día (aunque esté en `top`).
      */
     me?: DailyRow;
+}
+
+/**
+ * `GET /me/achievements`.
+ */
+export interface MyAchievements {
+    /**
+     * Los desbloqueados, del más antiguo al más reciente.
+     */
+    unlocked: UnlockedAchievement[];
+    /**
+     * Decisiones óptimas seguidas ahora mismo (Ranked y reto diario).
+     */
+    optimalStreak: number;
+    /**
+     * La mejor racha de decisiones óptimas.
+     */
+    bestOptimalStreak: number;
 }
 
 /**
@@ -532,6 +556,10 @@ export interface RoundResult {
      */
     refilled?: number;
     review?: ReviewItem[];
+    /**
+     * Logros desbloqueados con esta ronda (falta si no hubo ninguno).
+     */
+    unlocked?: AchievementId[];
 }
 
 export interface Rules {
@@ -549,6 +577,14 @@ export interface Rules {
      * La usa el front para rebarajar; el motor la ignora.
      */
     penetration: number;
+}
+
+export interface UnlockedAchievement {
+    id: AchievementId;
+    /**
+     * RFC 3339.
+     */
+    unlockedAt: string;
 }
 
 export interface WalletView {

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO player_stats (user_id, optimal_streak, best_optimal_streak)\n             VALUES ($1, $2, $3)\n             ON CONFLICT (user_id) DO UPDATE\n             SET optimal_streak = $2,\n                 best_optimal_streak = greatest(player_stats.best_optimal_streak, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "396c96a4eb55ca23ed4bad34e2e1e3c8959b18058c69dd012ac087c4cb633ac4"
+}

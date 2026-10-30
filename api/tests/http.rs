@@ -1914,6 +1914,12 @@ async fn ranked_leaderboard_and_seasons(pool: PgPool) {
     );
     let res = send(&app, "GET", "/api/v1/me/records", None, Some(&carla)).await;
     assert_eq!(res.body["ranked"], json!({ "seasons": [] }));
+
+    // Logro de medalla al cerrar la temporada, solo para quien la recibió.
+    let res = send(&app, "GET", "/api/v1/me/achievements", None, Some(&ana)).await;
+    assert_eq!(achievement_ids(&res.body), ["rankedMedal"]);
+    let res = send(&app, "GET", "/api/v1/me/achievements", None, Some(&carla)).await;
+    assert!(achievement_ids(&res.body).is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -2119,5 +2125,103 @@ async fn daily_leaderboard_and_records(pool: PgPool) {
     assert_eq!(
         res.body["daily"],
         json!({ "finished": 1, "bestBalance": 700, "bestRank": 2 })
+    );
+}
+
+// ---- Logros ----
+
+fn achievement_ids(body: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = body["unlocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn achievements_unlock_once(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let run = new_run(&app, &ana, "vegas").await;
+    let res = send(&app, "GET", "/api/v1/me/achievements", None, Some(&ana)).await;
+    assert_eq!(
+        res.body,
+        json!({ "unlocked": [], "optimalStreak": 0, "bestOptimalStreak": 0 })
+    );
+
+    // Blackjack contra un 9: se liquida en el reparto.
+    stack(&pool, &run, 6, &[Ace, Nine, K, Seven]).await;
+    let k = key();
+    let res = deal_round(&app, &ana, 10, &k).await;
+    assert_eq!(res.body["phase"], "settled", "{}", res.body);
+    assert_eq!(
+        res.body["result"]["unlocked"],
+        json!(["firstWin", "blackjack"])
+    );
+    // La respuesta repetida trae lo mismo.
+    assert_eq!(deal_round(&app, &ana, 10, &k).await.body, res.body);
+
+    // Ya los tiene: no se vuelven a anunciar.
+    stack(&pool, &run, 6, &[Ace, Nine, K, Seven]).await;
+    let res = deal_round(&app, &ana, 10, &key()).await;
+    assert!(res.body["result"].get("unlocked").is_none());
+
+    let res = send(&app, "GET", "/api/v1/me/achievements", None, Some(&ana)).await;
+    assert_eq!(achievement_ids(&res.body), ["blackjack", "firstWin"]);
+    assert!(res.body["unlocked"][0]["unlockedAt"].is_string());
+    // Casual no tiene revisión: no cuenta para la racha.
+    assert_eq!(res.body["optimalStreak"], 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn optimal_streak_in_ranked(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let acc = ranked_me(&app, &ana).await;
+    sqlx::query(
+        "INSERT INTO player_stats (user_id, optimal_streak, best_optimal_streak)
+         SELECT id, 9, 9 FROM users",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 20 contra 9 (+ oculta 7): plantarse es lo óptimo y llega a 10 seguidas. El dealer
+    // pide con 16 y se pasa.
+    stack_account(&pool, &acc, &[Ten, Nine, K, Seven, Ten]).await;
+    let round = ranked_deal(&app, &ana, 10).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = act(&app, &ana, &round, "stand", &key()).await;
+    assert_eq!(res.body["result"]["review"][0]["best"], "stand");
+    assert_eq!(
+        res.body["result"]["unlocked"],
+        json!(["firstWin", "optimal10"])
+    );
+    let res = send(&app, "GET", "/api/v1/me/achievements", None, Some(&ana)).await;
+    assert_eq!(
+        (&res.body["optimalStreak"], &res.body["bestOptimalStreak"]),
+        (&json!(10), &json!(10))
+    );
+
+    // Pedir con 20 no es óptimo: la racha vuelve a 0 y la mejor se conserva.
+    stack_account(&pool, &acc, &[Ten, Nine, K, Seven, Ten]).await;
+    let round = ranked_deal(&app, &ana, 10).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(res.body["phase"], "settled", "se pasa con 30");
+    assert!(res.body["result"].get("unlocked").is_none());
+    let res = send(&app, "GET", "/api/v1/me/achievements", None, Some(&ana)).await;
+    assert_eq!(
+        (&res.body["optimalStreak"], &res.body["bestOptimalStreak"]),
+        (&json!(0), &json!(10))
     );
 }
