@@ -22,6 +22,7 @@ use crate::auth::{current_session, AuthUser};
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiJson, ApiPath};
 use crate::routes::auth::unique_violation;
+use crate::routes::cosmetics::title;
 use crate::state::AppState;
 
 pub const START_BALANCE: i64 = 500;
@@ -397,12 +398,14 @@ pub async fn weekly_leaderboard(
                SELECT user_id, max(peak) AS peak FROM casual_runs
                WHERE started_at >= $1 GROUP BY user_id
            ), ranked AS (
-               SELECT b.user_id, b.peak, u.display_name,
+               SELECT b.user_id, b.peak, u.display_name, c.title,
                       rank() OVER (ORDER BY b.peak DESC) AS pos,
                       row_number() OVER (ORDER BY b.peak DESC, u.display_name_key) AS n
                FROM best b JOIN users u ON u.id = b.user_id
+               LEFT JOIN user_cosmetics c ON c.user_id = b.user_id
            )
-           SELECT user_id, peak AS "peak!", display_name, pos AS "pos!", n AS "n!"
+           SELECT user_id, peak AS "peak!", display_name, title AS "title?", pos AS "pos!",
+                  n AS "n!"
            FROM ranked WHERE n <= 100 OR user_id = $2
            ORDER BY n"#,
         start,
@@ -416,6 +419,7 @@ pub async fn weekly_leaderboard(
         let row = LeaderboardRow {
             rank: r.pos as u32,
             display_name: r.display_name,
+            title: title(r.title.as_deref()),
             value: r.peak,
             is_me: Some(r.user_id) == me,
         };

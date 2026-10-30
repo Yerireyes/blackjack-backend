@@ -73,6 +73,12 @@ fn as_str(id: CosmeticId) -> String {
     }
 }
 
+/// El título equipado para las filas de los rankings. Uno desconocido no rompe la
+/// página: se omite.
+pub fn title(s: Option<&str>) -> Option<CosmeticId> {
+    parse(s?).ok()
+}
+
 fn parse(s: &str) -> ApiResult<CosmeticId> {
     serde_json::from_value(serde_json::Value::String(s.to_string()))
         .map_err(|_| ApiError::internal(format!("cosmético desconocido: {s}")))

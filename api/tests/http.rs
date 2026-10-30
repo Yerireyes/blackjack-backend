@@ -2294,3 +2294,58 @@ async fn cosmetics_follow_achievements(pool: PgPool) {
     let res = send(&app, "GET", uri, None, None).await;
     assert_eq!(res.status, StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn titles_show_in_leaderboards(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    sqlx::query(
+        "INSERT INTO user_achievements (user_id, achievement)
+         SELECT id, 'firstWin' FROM users WHERE email = 'ana@example.com'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let equipped = json!({
+        "felt": "feltGreen", "cardBack": "backClassic", "chips": "chipsClassic",
+        "title": "titleRookie"
+    });
+    let res = send(
+        &app,
+        "PUT",
+        "/api/v1/me/cosmetics",
+        Some(equipped),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    // Una fila en cada ranking para los dos.
+    for cookie in [&ana, &beto] {
+        let run = new_run(&app, cookie, "vegas").await;
+        set_run(&pool, &run, "peak = 600").await;
+        let acc = ranked_me(&app, cookie).await;
+        set_account(&pool, &acc, "hands = 200").await;
+        let attempt = daily_start(&app, cookie).await.body;
+        set_attempt(&pool, &attempt, "hands = 30, status = 'finished'").await;
+    }
+    for uri in [
+        "/api/v1/casual/leaderboard/weekly",
+        "/api/v1/ranked/leaderboard",
+        "/api/v1/daily/leaderboard",
+    ] {
+        let res = send(&app, "GET", uri, None, Some(&ana)).await;
+        let top = res.body["top"].as_array().unwrap();
+        assert_eq!(top.len(), 2, "{uri}");
+        let row = |name: &str| {
+            top.iter()
+                .find(|r| r["displayName"] == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(row("ana")["title"], "titleRookie", "{uri}");
+        assert!(row("beto").get("title").is_none(), "{uri}: sin título");
+        assert_eq!(res.body["me"]["title"], "titleRookie", "{uri}");
+    }
+}

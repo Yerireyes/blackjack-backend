@@ -485,6 +485,10 @@ export interface DailyRow {
      */
     rank: number;
     displayName: string;
+    /**
+     * Título equipado (cosmético), si lleva uno.
+     */
+    title?: CosmeticId;
     balance: number;
     hands: number;
     /**
@@ -538,6 +542,10 @@ export interface LeaderboardRow {
     rank: number;
     displayName: string;
     /**
+     * Título equipado (cosmético), si lleva uno.
+     */
+    title?: CosmeticId;
+    /**
      * Casual semanal: el mejor pico de la semana.
      */
     value: number;
@@ -571,6 +579,10 @@ export interface RankedRow {
      */
     rank: number;
     displayName: string;
+    /**
+     * Título equipado (cosmético), si lleva uno.
+     */
+    title?: CosmeticId;
     net: number;
     hands: number;
     /**

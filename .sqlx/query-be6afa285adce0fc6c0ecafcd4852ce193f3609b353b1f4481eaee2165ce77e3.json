@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT a.net AS \"net!\", a.hands, u.display_name, r.medal,\n                      1 + (SELECT count(*) FROM ranked_accounts o\n                           WHERE o.season_id = a.season_id AND o.hands >= $3 AND o.net > a.net)\n                          AS \"pos!\"\n               FROM ranked_accounts a\n               JOIN users u ON u.id = a.user_id\n               LEFT JOIN season_results r ON r.season_id = a.season_id AND r.user_id = a.user_id\n               WHERE a.season_id = $1 AND a.user_id = $2",
+  "query": "SELECT a.net AS \"net!\", a.hands, u.display_name, r.medal, c.title AS \"title?\",\n                      1 + (SELECT count(*) FROM ranked_accounts o\n                           WHERE o.season_id = a.season_id AND o.hands >= $3 AND o.net > a.net)\n                          AS \"pos!\"\n               FROM ranked_accounts a\n               JOIN users u ON u.id = a.user_id\n               LEFT JOIN season_results r ON r.season_id = a.season_id AND r.user_id = a.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = a.user_id\n               WHERE a.season_id = $1 AND a.user_id = $2",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "pos!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -66,8 +77,9 @@
       false,
       false,
       true,
+      true,
       null
     ]
   },
-  "hash": "5ce74ae694db11866fd9dfb9459d6d1d5beb7f57ab8850fe343c278db9ac377c"
+  "hash": "be6afa285adce0fc6c0ecafcd4852ce193f3609b353b1f4481eaee2165ce77e3"
 }

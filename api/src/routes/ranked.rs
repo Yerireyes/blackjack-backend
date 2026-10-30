@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::auth::{current_session, AuthUser};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::casual::{lock_user, rfc3339, shuffled_shoe, BET_STEP, MAX_BET, MIN_BET};
+use crate::routes::cosmetics::title;
 use crate::state::AppState;
 
 pub const START_BALANCE: i64 = 500;
@@ -361,8 +362,10 @@ pub async fn leaderboard(
                FROM ranked_accounts a JOIN users u ON u.id = a.user_id
                WHERE a.season_id = $1 AND a.hands >= $2
            )
-           SELECT q.user_id, q.net AS "net!", q.hands, q.display_name, q.pos AS "pos!", r.medal
+           SELECT q.user_id, q.net AS "net!", q.hands, q.display_name, q.pos AS "pos!", r.medal,
+                  c.title AS "title?"
            FROM q LEFT JOIN season_results r ON r.season_id = $1 AND r.user_id = q.user_id
+           LEFT JOIN user_cosmetics c ON c.user_id = q.user_id
            WHERE q.n <= 100
            ORDER BY q.n"#,
         season.id,
@@ -375,6 +378,7 @@ pub async fn leaderboard(
         .map(|r| RankedRow {
             rank: r.pos as u32,
             display_name: r.display_name,
+            title: title(r.title.as_deref()),
             net: r.net,
             hands: r.hands.max(0) as u32,
             provisional: false,
@@ -385,13 +389,14 @@ pub async fn leaderboard(
     let mine = match me {
         None => None,
         Some(user_id) => sqlx::query!(
-            r#"SELECT a.net AS "net!", a.hands, u.display_name, r.medal,
+            r#"SELECT a.net AS "net!", a.hands, u.display_name, r.medal, c.title AS "title?",
                       1 + (SELECT count(*) FROM ranked_accounts o
                            WHERE o.season_id = a.season_id AND o.hands >= $3 AND o.net > a.net)
                           AS "pos!"
                FROM ranked_accounts a
                JOIN users u ON u.id = a.user_id
                LEFT JOIN season_results r ON r.season_id = a.season_id AND r.user_id = a.user_id
+               LEFT JOIN user_cosmetics c ON c.user_id = a.user_id
                WHERE a.season_id = $1 AND a.user_id = $2"#,
             season.id,
             user_id,
@@ -402,6 +407,7 @@ pub async fn leaderboard(
         .map(|r| RankedRow {
             rank: r.pos as u32,
             display_name: r.display_name,
+            title: title(r.title.as_deref()),
             net: r.net,
             hands: r.hands.max(0) as u32,
             provisional: r.hands < MIN_HANDS,

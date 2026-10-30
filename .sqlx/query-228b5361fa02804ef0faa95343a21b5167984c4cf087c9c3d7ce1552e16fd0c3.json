@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH q AS (\n               SELECT a.user_id, a.net, a.hands, u.display_name,\n                      rank() OVER (ORDER BY a.net DESC) AS pos,\n                      row_number() OVER (ORDER BY a.net DESC, u.display_name_key) AS n\n               FROM ranked_accounts a JOIN users u ON u.id = a.user_id\n               WHERE a.season_id = $1 AND a.hands >= $2\n           )\n           SELECT q.user_id, q.net AS \"net!\", q.hands, q.display_name, q.pos AS \"pos!\", r.medal\n           FROM q LEFT JOIN season_results r ON r.season_id = $1 AND r.user_id = q.user_id\n           WHERE q.n <= 100\n           ORDER BY q.n",
+  "query": "WITH q AS (\n               SELECT a.user_id, a.net, a.hands, u.display_name,\n                      rank() OVER (ORDER BY a.net DESC) AS pos,\n                      row_number() OVER (ORDER BY a.net DESC, u.display_name_key) AS n\n               FROM ranked_accounts a JOIN users u ON u.id = a.user_id\n               WHERE a.season_id = $1 AND a.hands >= $2\n           )\n           SELECT q.user_id, q.net AS \"net!\", q.hands, q.display_name, q.pos AS \"pos!\", r.medal,\n                  c.title AS \"title?\"\n           FROM q LEFT JOIN season_results r ON r.season_id = $1 AND r.user_id = q.user_id\n           LEFT JOIN user_cosmetics c ON c.user_id = q.user_id\n           WHERE q.n <= 100\n           ORDER BY q.n",
   "describe": {
     "columns": [
       {
@@ -63,6 +63,17 @@
             "name": "medal"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "title"
+          }
+        }
       }
     ],
     "parameters": {
@@ -77,8 +88,9 @@
       false,
       false,
       null,
+      true,
       true
     ]
   },
-  "hash": "a07a5eac176a5108b6137de6ac1345280b5ab387fd815daaee6437c641a0554f"
+  "hash": "228b5361fa02804ef0faa95343a21b5167984c4cf087c9c3d7ce1552e16fd0c3"
 }

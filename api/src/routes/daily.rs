@@ -29,6 +29,7 @@ use crate::auth::{current_session, AuthUser};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::auth::unique_violation;
 use crate::routes::casual::{self, lock_user, now_micros, require_display_name, rfc3339, MIN_BET};
+use crate::routes::cosmetics::title;
 use crate::state::AppState;
 
 pub const START_BALANCE: i64 = 500;
@@ -331,13 +332,14 @@ pub async fn leaderboard(
     let me = current_session(&jar, &state).await?.map(|s| s.user_id);
     let rows = sqlx::query!(
         r#"WITH q AS (
-               SELECT d.user_id, d.balance, d.hands, u.display_name,
+               SELECT d.user_id, d.balance, d.hands, u.display_name, c.title,
                       rank() OVER (ORDER BY d.balance DESC) AS pos,
                       row_number() OVER (ORDER BY d.balance DESC, d.finished_at) AS n
                FROM daily_attempts d JOIN users u ON u.id = d.user_id
+               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id
                WHERE d.day = $1 AND d.status = 'finished'
            )
-           SELECT user_id, balance, hands, display_name, pos AS "pos!"
+           SELECT user_id, balance, hands, display_name, title AS "title?", pos AS "pos!"
            FROM q WHERE n <= 100 ORDER BY n"#,
         day
     )
@@ -348,6 +350,7 @@ pub async fn leaderboard(
         .map(|r| DailyRow {
             rank: r.pos as u32,
             display_name: r.display_name,
+            title: title(r.title.as_deref()),
             balance: r.balance,
             hands: r.hands.max(0) as u32,
             finished: true,
@@ -357,11 +360,12 @@ pub async fn leaderboard(
     let mine = match me {
         None => None,
         Some(user_id) => sqlx::query!(
-            r#"SELECT d.balance, d.hands, d.status, u.display_name,
+            r#"SELECT d.balance, d.hands, d.status, u.display_name, c.title AS "title?",
                       1 + (SELECT count(*) FROM daily_attempts o
                            WHERE o.day = d.day AND o.status = 'finished'
                              AND o.balance > d.balance) AS "pos!"
                FROM daily_attempts d JOIN users u ON u.id = d.user_id
+               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id
                WHERE d.day = $1 AND d.user_id = $2"#,
             day,
             user_id
@@ -371,6 +375,7 @@ pub async fn leaderboard(
         .map(|r| DailyRow {
             rank: r.pos as u32,
             display_name: r.display_name,
+            title: title(r.title.as_deref()),
             balance: r.balance,
             hands: r.hands.max(0) as u32,
             finished: r.status == "finished",
