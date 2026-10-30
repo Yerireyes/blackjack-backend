@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH q AS (\n               SELECT d.user_id, d.balance, d.hands, u.display_name,\n                      rank() OVER (ORDER BY d.balance DESC) AS pos,\n                      row_number() OVER (ORDER BY d.balance DESC, d.finished_at) AS n\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               WHERE d.day = $1 AND d.status = 'finished'\n           )\n           SELECT user_id, balance, hands, display_name, pos AS \"pos!\"\n           FROM q WHERE n <= 100 ORDER BY n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "balance",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "balance"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "hands",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "hands"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "pos!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "3e38b3f92bf17a1e4bb9032f2bde7f4772496d20791755475cd0abfff13f8e1d"
+}

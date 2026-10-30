@@ -106,11 +106,27 @@ export interface WeeklyLeaderboard {
 }
 
 /**
+ * `GET /daily/leaderboard?day=AAAA-MM-DD`.
+ */
+export interface DailyLeaderboard {
+    day: string;
+    /**
+     * Los 100 primeros por saldo final.
+     */
+    top: DailyRow[];
+    /**
+     * La fila del usuario, si jugó ese día (aunque esté en `top`).
+     */
+    me?: DailyRow;
+}
+
+/**
  * `GET /me/records`.
  */
 export interface MyRecords {
     casual: CasualRecords;
     ranked: RankedRecords;
+    daily: DailyRecords;
 }
 
 /**
@@ -183,6 +199,38 @@ export interface CreateCasualRunRequest {
 }
 
 /**
+ * `POST /daily/attempts` y `GET /daily/me`: el intento del reto de hoy.
+ */
+export interface DailyAttemptView {
+    id: string;
+    /**
+     * Día del reto, `"AAAA-MM-DD"` (UTC).
+     */
+    day: string;
+    status: DailyAttemptStatus;
+    balance: number;
+    peak: number;
+    /**
+     * Manos (rondas) liquidadas.
+     */
+    hands: number;
+    /**
+     * Manos del reto (30).
+     */
+    handsTotal: number;
+    /**
+     * Apuesta máxima para la próxima ronda (0 si terminó).
+     */
+    maxBet: number;
+    /**
+     * Fracción del zapato ya repartida.
+     */
+    penetration: number;
+    startedAt: string;
+    finishedAt?: string;
+}
+
+/**
  * `POST /play/rounds/{id}/actions`.
  */
 export interface RoundActionRequest {
@@ -196,8 +244,8 @@ export interface RoundActionRequest {
 export interface NewRoundRequest {
     kind: RoundKind;
     /**
-     * Casual: id de la partida activa. Si falta, se usa la partida activa. Ranked:
-     * se ignora; siempre es la cuenta de la temporada actual.
+     * Casual: id de la partida activa. Si falta, se usa la partida activa. Ranked y
+     * reto diario: se ignora; siempre es la cuenta de la temporada o el intento de hoy.
      */
     contextId?: string;
     bet: number;
@@ -344,6 +392,37 @@ export interface CasualRunView {
     endedAt?: string;
 }
 
+export interface DailyRecords {
+    /**
+     * Retos terminados.
+     */
+    finished: number;
+    /**
+     * Mejor saldo final.
+     */
+    bestBalance?: number;
+    /**
+     * Mejor posición final en un día ya cerrado.
+     */
+    bestRank?: number;
+}
+
+export interface DailyRow {
+    /**
+     * Posición entre los intentos terminados, desde 1. Empates comparten posición. Si
+     * el intento no terminó, es la que tendría con ese saldo.
+     */
+    rank: number;
+    displayName: string;
+    balance: number;
+    hands: number;
+    /**
+     * Terminó el intento (solo los terminados entran en `top`).
+     */
+    finished: boolean;
+    isMe: boolean;
+}
+
 export interface DealerDistribution {
     p17: number;
     p18: number;
@@ -488,13 +567,15 @@ export type Action = "stand" | "hit" | "double" | "split" | "surrender";
 
 export type CasualRunStatus = "active" | "retired" | "busted";
 
+export type DailyAttemptStatus = "active" | "finished";
+
 export type DoubleOn = "any" | "nineToEleven" | "tenToEleven";
 
 export type HandOutcome = "blackjack" | "win" | "push" | "lose" | "bust" | "surrender";
 
 export type Preset = "vegas" | "europe" | "sixToFive";
 
-export type RoundKind = "casual" | "ranked";
+export type RoundKind = "casual" | "ranked" | "daily";
 
 export type Suit = "S" | "H" | "D" | "C";
 

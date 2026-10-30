@@ -48,6 +48,14 @@ pub fn rfc3339(t: OffsetDateTime) -> String {
     t.format(&Rfc3339).expect("fecha formateable")
 }
 
+/// Ahora, truncado a microsegundos como lo guarda Postgres: así la respuesta que crea
+/// un registro coincide con la que lo lee después.
+pub fn now_micros() -> OffsetDateTime {
+    let now = OffsetDateTime::now_utc();
+    now.replace_nanosecond(now.nanosecond() / 1_000 * 1_000)
+        .expect("nanosegundos válidos")
+}
+
 /// Partida casual tal como está en la base.
 pub struct Run {
     pub id: Uuid,
@@ -155,7 +163,7 @@ impl Run {
         self.hands += 1;
         if self.balance < MIN_BET {
             self.status = CasualRunStatus::Busted;
-            self.ended_at = Some(OffsetDateTime::now_utc());
+            self.ended_at = Some(now_micros());
         }
     }
 
@@ -297,7 +305,7 @@ pub async fn create_run(
         peak: START_BALANCE,
         hands: 0,
         status: CasualRunStatus::Active,
-        started_at: OffsetDateTime::now_utc(),
+        started_at: now_micros(),
         ended_at: None,
     };
     sqlx::query!(
@@ -363,7 +371,7 @@ pub async fn retire(
         return Err(round_active());
     }
     run.status = CasualRunStatus::Retired;
-    run.ended_at = Some(OffsetDateTime::now_utc());
+    run.ended_at = Some(now_micros());
     run.save(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(run.view()))
@@ -442,6 +450,7 @@ pub async fn records(State(state): State<AppState>, user: AuthUser) -> ApiResult
             most_hands: r.most_hands.map(|h| h.max(0) as u32),
         },
         ranked: super::ranked::records(&mut db, user.id).await?,
+        daily: super::daily::records(&mut db, user.id).await?,
     }))
 }
 

@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.balance, d.hands, d.status, u.display_name,\n                      1 + (SELECT count(*) FROM daily_attempts o\n                           WHERE o.day = d.day AND o.status = 'finished'\n                             AND o.balance > d.balance) AS \"pos!\"\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               WHERE d.day = $1 AND d.user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "balance"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "hands",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "hands"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "daily_attempts",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "pos!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "c5498be5c38e2a9fb875e69162e8b76d4903b8d62d58ea47964a6e54c7ac9820"
+}

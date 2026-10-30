@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT min(pos) AS best FROM (\n               SELECT user_id, rank() OVER (PARTITION BY day ORDER BY balance DESC) AS pos\n               FROM daily_attempts\n               WHERE status = 'finished' AND day < $2\n                 AND day IN (SELECT day FROM daily_attempts WHERE user_id = $1)\n           ) q WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "best",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fdb2c5d43afc294f7b4fe6b5f6586e4256de091fe9b250b1d44034b672a1d19e"
+}

@@ -233,7 +233,7 @@ Fase 3 (núcleo):
 
 Fase 5 (extras, solo para dimensionar el modelo):
 
-- **Reto diario:** mismas reglas y mismo zapato para todos ese día. Semilla:
+- **Reto diario (hecho, ver 8.3):** mismas reglas y mismo zapato para todos ese día. Semilla:
   `HMAC(DAILY_SEED_SECRET, fecha)`, secreta para que no se pueda precalcular. Un intento por
   usuario y día, 30 manos; ranking diario por saldo final.
 - **Logros** («10 decisiones óptimas seguidas», «sobrevive 50 manos con 6:5»…) y
@@ -337,6 +337,9 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 | GET | `/ranked/leaderboard?season=` | Top 100 + la fila del usuario |
 | GET | `/casual/leaderboard/weekly` | Top 100 por pico de la semana |
 | GET | `/me/records` | Récords personales y medallas |
+| POST | `/daily/attempts` | Empieza el reto de hoy (409 si ya lo empezó) |
+| GET | `/daily/me` | El intento de hoy o 404 |
+| GET | `/daily/leaderboard?day=` | Top 100 del día por saldo final + la fila del usuario |
 
 ### 7.2 `RoundView` (lo único que el cliente ve de una ronda)
 
@@ -375,8 +378,9 @@ Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
 `round_active`, `no_active_round`, `bet_out_of_range`, `insufficient_funds`,
 `action_not_allowed`, `run_finished`, `refill_pending`, `display_name_taken`,
 `display_name_invalid`. Añadidos al implementar Casual: `run_active`, `no_active_run` y
-`display_name_required` (`not_available` dejó de existir con la fase 4). El detalle por
-endpoint está en «Front — Fase 3 Casual.md» y «Front — Fase 4 Ranked.md».
+`display_name_required` (`not_available` dejó de existir con la fase 4). Del reto diario:
+`no_daily_attempt`, `daily_taken` y `daily_finished`. El detalle por endpoint está en
+«Front — Fase 3 Casual.md», «Front — Fase 4 Ranked.md» y «Front — Fase 5 Reto diario.md».
 
 ---
 
@@ -399,7 +403,7 @@ endpoint está en «Front — Fase 3 Casual.md» y «Front — Fase 4 Ranked.md�
    mínimo de manos, revisión. *Tests:* recarga solo una vez en 24 h; `max_bet` según la
    fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
    `review` coincide con `analyze_hand` para el mismo estado. Decisiones en 8.2.
-5. **Extras.** Reto diario, logros, cosméticos y Facebook.
+5. **Extras.** Reto diario (**hecho**, 8.3), logros, cosméticos y Facebook.
 
 ### 8.1 Cómo quedaron las fases 2 y 3
 
@@ -478,13 +482,47 @@ y `api/src/routes/play.rs`.
   durante 24 h, plantándose en las manos pendientes. Esas decisiones automáticas no se
   revisan. Así una temporada nunca queda abierta para siempre por una ronda olvidada.
 
+### 8.3 Cómo quedó el reto diario (fase 5)
+
+Migración `api/migrations/20261031000001_daily.sql`; rutas en `api/src/routes/daily.rs` y
+`api/src/routes/play.rs` (`kind: "daily"`).
+
+- **Día** en UTC (`"AAAA-MM-DD"`). Reglas de Las Vegas en código, 500 fichas, 30 manos.
+- **Zapato.** `ChaCha20Rng` sembrado con `HMAC-SHA256(clave, "AAAA-MM-DD:n")`, donde `n` es
+  el número de barajada del intento (0 al empezar). Todos los que empiezan ese día reciben el
+  mismo orden; si alguien llega a rebarajar, la barajada `n` también es la misma para todos.
+  Después de la primera decisión distinta, cada jugador ve otras cartas (las mismas, pero
+  corridas), como en una mesa real.
+- **Clave.** `DAILY_SEED_SECRET` (32 caracteres o más). Sin ella se deriva de `JWT_SECRET`
+  (SHA-512 con un prefijo propio). Fijarla en producción permite rotar `JWT_SECRET` sin
+  cambiar el zapato del día.
+- **Intento.** `POST /daily/attempts` crea el de hoy (uno por usuario y día: 409
+  `daily_taken`) y exige nombre elegido. Se reparte con `POST /play/rounds` y
+  `kind: "daily"`, siempre con el intento de hoy (`contextId` se ignora): sin intento, 404
+  `no_daily_attempt`; terminado, 409 `daily_finished`. Apuesta como Casual: 10–500, múltiplo
+  de 10 y no más que el saldo. Termina a las 30 manos o con menos de 10.
+- **Sin ayudas y con revisión**, como Ranked: sin `shoeCounts` y con `result.review`.
+- **Un intento que no se terminó ese día** queda sin terminar: no entra en el ranking y no
+  se puede seguir otro día (la ronda en juego, si la hay, sí se puede terminar o se cierra
+  sola a las 24 h).
+- **Ranking** (`GET /daily/leaderboard?day=`). Top 100 de intentos **terminados** por saldo
+  final (empates comparten posición; desempata quien terminó antes). `me` trae el intento del
+  usuario aunque no haya terminado (`finished: false`, con la posición que tendría). Público.
+- **Récords.** `MyRecords.daily`: retos terminados, mejor saldo final y mejor posición en
+  días ya cerrados (antes de hoy).
+- **Riesgo conocido.** Como el zapato es el mismo para todos, alguien con una segunda cuenta
+  puede jugar primero y anotar el orden de las primeras cartas. Lo limitan el límite de tasa
+  del registro y que el orden diverge tras la primera decisión distinta; si importa, la
+  alternativa es un zapato por usuario (mismo día, misma dificultad media) a cambio de perder
+  «el mismo reto para todos».
+
 ---
 
 ## 9. Seguridad: lista de control
 
 - [x] La oculta y el orden del zapato jamás salen del servidor antes de tiempo (test de propiedad).
-- [ ] CSPRNG para barajar (hecho); la semilla del reto diario es secreta (`DAILY_SEED_SECRET`,
-      fase 5).
+- [x] CSPRNG para barajar; la semilla del reto diario es secreta (`DAILY_SEED_SECRET`, o
+      derivada de `JWT_SECRET`).
 - [x] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
 - [x] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
 - [x] Rankings sin emails; `display_name` validado y con lista de reservados.

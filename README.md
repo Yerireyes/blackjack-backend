@@ -125,6 +125,10 @@ valores:
   $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
   ```
 
+- `DAILY_SEED_SECRET=` (opcional): la clave de la semilla del reto diario, generada igual.
+  Sin ella se deriva de `JWT_SECRET`. En producción conviene fijarla: así se puede rotar
+  `JWT_SECRET` sin cambiar el zapato del día.
+
 #### Login con Google (opcional, gratis)
 
 Sin `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET`, Google queda deshabilitado:
@@ -286,6 +290,9 @@ estrategia, con re-división real):
 | GET | `/casual/leaderboard/weekly` | Top 100 por mejor pico de la semana | No |
 | GET | `/ranked/me` | Cuenta Ranked de la temporada actual (la crea con 500) | Sí |
 | GET | `/ranked/leaderboard?season=AAAA-MM` | Top 100 por ganancia neta (mínimo 200 manos) | No |
+| POST | `/daily/attempts` | Empieza el reto de hoy (uno por día) | Sí |
+| GET | `/daily/me` | El intento del reto de hoy | Sí |
+| GET | `/daily/leaderboard?day=AAAA-MM-DD` | Top 100 por saldo final del día | No |
 | GET | `/me/records` | Récords de Casual y resultados de Ranked | Sí |
 | GET | `/health` | Estado del servicio y de la base | No |
 
@@ -306,6 +313,10 @@ estrategia, con re-división real):
   las rondas sin acciones en 24 h (plantándose) y las temporadas terminadas (posiciones y
   medallas). Detalle en la sección 8.2 de la especificación y, para el front, en
   [docs/Front — Fase 4 Ranked.md](docs/).
+- **Reto diario:** mismo zapato para todos cada día (UTC), barajado con ChaCha20 sembrado
+  con `HMAC-SHA256(DAILY_SEED_SECRET, día)`; un intento de 30 manos por usuario, sin ayudas
+  y con revisión, y ranking por saldo final. Detalle en la sección 8.3 de la especificación
+  y, para el front, en [docs/Front — Fase 5 Reto diario.md](docs/).
 - Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
   automáticamente) en la sección 2 de
   [docs/Especificación — Cuentas, Casual y Ranked.md](docs/).
@@ -397,8 +408,8 @@ mazos tarda ~1–2 ms.
 
 ## Pendiente
 
-- Extras (fase 5) de la especificación. En Casual falta el récord de racha de decisiones
-  óptimas (sección 8.1).
+- Resto de la fase 5: logros, cosméticos y login con Facebook. En Casual falta el récord de
+  racha de decisiones óptimas (sección 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
 - CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
   benchmarks (> 20 %).
