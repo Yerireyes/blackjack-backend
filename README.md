@@ -294,6 +294,8 @@ estrategia, con re-división real):
 | GET | `/daily/me` | El intento del reto de hoy | Sí |
 | GET | `/daily/leaderboard?day=AAAA-MM-DD` | Top 100 por saldo final del día | No |
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas | Sí |
+| GET | `/cosmetics` | Catálogo de cosméticos y el logro que desbloquea cada uno | No |
+| GET · PUT | `/me/cosmetics` | Cosméticos que tiene y los que tiene puestos | Sí |
 | GET | `/me/records` | Récords de Casual y resultados de Ranked | Sí |
 | GET | `/health` | Estado del servicio y de la base | No |
 
@@ -322,6 +324,13 @@ estrategia, con re-división real):
   vienen en `result.unlocked`; `GET /me/achievements` los lista con la racha de decisiones
   óptimas. Catálogo y condiciones en la sección 8.4 de la especificación y, para el front, en
   [docs/Front — Fase 5 Logros.md](docs/).
+- **Cosméticos:** paño, dorso, fichas y título, desbloqueados por logros (solo apariencia).
+  Lo que el usuario tiene se deriva de sus logros; solo se guarda lo que tiene puesto.
+  Catálogo en la sección 8.5 y, para el front, en
+  [docs/Front — Fase 5 Cosméticos.md](docs/).
+- **Migraciones en LF:** `.gitattributes` fija `api/migrations/*.sql` en LF. sqlx guarda el
+  checksum de cada migración aplicada y, con `core.autocrlf`, un archivo reescrito con CRLF
+  parecería modificado.
 - Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
   automáticamente) en la sección 2 de
   [docs/Especificación — Cuentas, Casual y Ranked.md](docs/).
@@ -413,8 +422,8 @@ mazos tarda ~1–2 ms.
 
 ## Pendiente
 
-- Resto de la fase 5: cosméticos y login con Facebook. La racha de decisiones óptimas no
-  cuenta Casual (sección 8.1).
+- Resto de la fase 5: login con Facebook. Los títulos todavía no salen en los rankings y la
+  racha de decisiones óptimas no cuenta Casual (secciones 8.5 y 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
 - CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
   benchmarks (> 20 %).
