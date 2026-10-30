@@ -1,0 +1,3 @@
+# sqlx guarda el checksum de cada migración: tienen que ser LF en cualquier sistema,
+# o con core.autocrlf una migración ya aplicada parece modificada.
+api/migrations/*.sql text eol=lf

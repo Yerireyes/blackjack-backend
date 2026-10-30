@@ -237,7 +237,7 @@ Fase 5 (extras, solo para dimensionar el modelo):
   `HMAC(DAILY_SEED_SECRET, fecha)`, secreta para que no se pueda precalcular. Un intento por
   usuario y día, 30 manos; ranking diario por saldo final.
 - **Logros** (**hechos**, ver 8.4: «10 decisiones óptimas seguidas», «sobrevive 50 manos con
-  6:5»…) y **recompensas cosméticas** (paño, dorsos, fichas, títulos; pendientes). **Nunca**
+  6:5»…) y **recompensas cosméticas** (paño, dorsos, fichas, títulos; **hechas**, ver 8.5). **Nunca**
   se dan fichas de Ranked.
 
 ---
@@ -342,6 +342,8 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 | GET | `/daily/me` | El intento de hoy o 404 |
 | GET | `/daily/leaderboard?day=` | Top 100 del día por saldo final + la fila del usuario |
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas |
+| GET | `/cosmetics` | Catálogo de cosméticos (público) |
+| GET · PUT | `/me/cosmetics` | Los que tiene y los que tiene puestos; `PUT` los cambia |
 
 ### 7.2 `RoundView` (lo único que el cliente ve de una ronda)
 
@@ -381,9 +383,10 @@ Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
 `action_not_allowed`, `run_finished`, `refill_pending`, `display_name_taken`,
 `display_name_invalid`. Añadidos al implementar Casual: `run_active`, `no_active_run` y
 `display_name_required` (`not_available` dejó de existir con la fase 4). Del reto diario:
-`no_daily_attempt`, `daily_taken` y `daily_finished`. El detalle por endpoint está en
-«Front — Fase 3 Casual.md», «Front — Fase 4 Ranked.md», «Front — Fase 5 Reto diario.md» y
-«Front — Fase 5 Logros.md».
+`no_daily_attempt`, `daily_taken` y `daily_finished`. De los cosméticos:
+`cosmetic_locked` y `cosmetic_wrong_slot`. El detalle por endpoint está en «Front — Fase 3
+Casual.md», «Front — Fase 4 Ranked.md» y los tres «Front — Fase 5 …» (reto diario, logros
+y cosméticos).
 
 ---
 
@@ -406,7 +409,8 @@ Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
    mínimo de manos, revisión. *Tests:* recarga solo una vez en 24 h; `max_bet` según la
    fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
    `review` coincide con `analyze_hand` para el mismo estado. Decisiones en 8.2.
-5. **Extras.** Reto diario (**hecho**, 8.3), logros (**hechos**, 8.4), cosméticos y Facebook.
+5. **Extras.** Reto diario (**hecho**, 8.3), logros (**hechos**, 8.4), cosméticos
+   (**hechos**, 8.5) y Facebook (pendiente).
 
 ### 8.1 Cómo quedaron las fases 2 y 3
 
@@ -547,8 +551,33 @@ Migración `api/migrations/20261101000001_achievements.sql`; lógica en
 - **Racha.** `player_stats` guarda la racha actual y la mejor. Cuenta solo las decisiones
   revisadas (Ranked y reto diario): una óptima suma, cualquier otra vuelve a 0. Las rondas
   sin decisiones (blackjack, peek) no la cambian. `GET /me/achievements` la devuelve.
-- **Sin recompensas todavía.** Los cosméticos (paño, dorsos, fichas, títulos) se colgarán de
-  estos ids; nunca dan fichas de Ranked.
+- **Recompensas:** los cosméticos de 8.5; nunca dan fichas de Ranked.
+
+### 8.5 Cómo quedaron los cosméticos (fase 5)
+
+Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
+`api/src/routes/cosmetics.rs`.
+
+- **Solo apariencia.** Paño, dorso de las cartas, fichas y título. No dan fichas, saldo ni
+  ventaja; el front los dibuja.
+- **Catálogo en código** (`CosmeticId` y `CosmeticSlot` en el contrato; `GET /cosmetics` lo
+  sirve con el logro que desbloquea cada uno):
+
+  | Lugar | De serie | Por logro |
+  |---|---|---|
+  | Paño | `feltGreen` | `feltBlue` (`dailyComplete`), `feltRed` (`doubleUp`), `feltBlack` (`rankedMedal`) |
+  | Dorso | `backClassic` | `backGold` (`blackjack`), `backMidnight` (`perfectSplit`) |
+  | Fichas | `chipsClassic` | `chipsNeon` (`sixToFiveSurvivor`), `chipsGold` (`rankedQualified`) |
+  | Título | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`) |
+
+  Todo logro desbloquea al menos un cosmético (test).
+- **Lo que tiene** se deriva de sus logros cada vez; no se guarda. Así un cosmético nuevo
+  ligado a un logro existente le llega a quien ya lo tenía.
+- **Lo que tiene puesto** va en `user_cosmetics`; sin fila, los de serie y sin título.
+  `PUT /me/cosmetics` reemplaza los cuatro a la vez: 400 `cosmetic_wrong_slot` si uno no va
+  en ese lugar, 409 `cosmetic_locked` si no lo desbloqueó.
+- **Títulos en los rankings:** todavía no salen junto al nombre en las filas de los
+  rankings; hoy solo los ve el propio usuario.
 
 ---
 
