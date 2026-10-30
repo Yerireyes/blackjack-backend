@@ -2,6 +2,7 @@ pub mod achievements;
 pub mod analyze;
 pub mod auth;
 pub mod casual;
+pub mod cosmetics;
 pub mod daily;
 pub mod google;
 pub mod play;

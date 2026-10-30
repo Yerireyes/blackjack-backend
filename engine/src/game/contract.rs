@@ -636,3 +636,76 @@ pub struct RankedRecords {
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub best_rank: Option<u32>,
 }
+
+/// Dónde se usa un cosmético.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum CosmeticSlot {
+    /// Paño de la mesa.
+    Felt,
+    /// Dorso de las cartas.
+    CardBack,
+    /// Fichas.
+    Chips,
+    /// Título junto al nombre.
+    Title,
+}
+
+/// Cosméticos. Solo cambian cómo se ve la mesa; nunca dan fichas ni ventaja. Los
+/// dibuja el front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum CosmeticId {
+    FeltGreen,
+    FeltBlue,
+    FeltRed,
+    FeltBlack,
+    BackClassic,
+    BackGold,
+    BackMidnight,
+    ChipsClassic,
+    ChipsNeon,
+    ChipsGold,
+    TitleRookie,
+    TitleCoolHead,
+    TitleByTheBook,
+    TitleMedalist,
+}
+
+/// Un cosmético del catálogo.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct CosmeticItem {
+    pub id: CosmeticId,
+    pub slot: CosmeticSlot,
+    /// El logro que lo desbloquea; falta en los que vienen de serie.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub unlocked_by: Option<AchievementId>,
+}
+
+/// Lo que el usuario tiene puesto. `PUT /me/cosmetics` lo reemplaza entero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct EquippedCosmetics {
+    pub felt: CosmeticId,
+    pub card_back: CosmeticId,
+    pub chips: CosmeticId,
+    /// Sin título: `null`.
+    #[cfg_attr(feature = "ts", tsify(type = "CosmeticId | null"))]
+    pub title: Option<CosmeticId>,
+}
+
+/// `GET /me/cosmetics` y `PUT /me/cosmetics`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct MyCosmetics {
+    /// Los que tiene (los de serie y los de sus logros), en el orden del catálogo.
+    pub owned: Vec<CosmeticId>,
+    pub equipped: EquippedCosmetics,
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT achievement FROM user_achievements WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "achievement",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_achievements",
+            "name": "achievement"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "93923d5136381243628ae57d1cca08974f04607095604d2d207571d2c6cd6800"
+}

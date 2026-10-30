@@ -2225,3 +2225,72 @@ async fn optimal_streak_in_ranked(pool: PgPool) {
         (&json!(0), &json!(10))
     );
 }
+
+// ---- Cosméticos ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn cosmetics_follow_achievements(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    let res = send(&app, "GET", "/api/v1/cosmetics", None, None).await;
+    assert_eq!(res.status, StatusCode::OK);
+    let catalog = res.body.as_array().unwrap();
+    assert_eq!(catalog.len(), 14);
+    assert_eq!(catalog[0], json!({ "id": "feltGreen", "slot": "felt" }));
+    assert!(catalog
+        .iter()
+        .any(|c| c == &json!({ "id": "backGold", "slot": "cardBack", "unlockedBy": "blackjack" })));
+
+    let ana = register(&app, "ana@example.com").await;
+    let uri = "/api/v1/me/cosmetics";
+    let defaults = json!({
+        "felt": "feltGreen", "cardBack": "backClassic", "chips": "chipsClassic", "title": null
+    });
+    let res = send(&app, "GET", uri, None, Some(&ana)).await;
+    assert_eq!(
+        res.body,
+        json!({ "owned": ["feltGreen", "backClassic", "chipsClassic"], "equipped": defaults })
+    );
+
+    // Bloqueado hasta tener el logro; cada uno en su lugar.
+    let gold = json!({
+        "felt": "feltGreen", "cardBack": "backGold", "chips": "chipsClassic", "title": "titleRookie"
+    });
+    let res = send(&app, "PUT", uri, Some(gold.clone()), Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+    assert_eq!(res.body["code"], "cosmetic_locked");
+    let wrong = json!({
+        "felt": "backClassic", "cardBack": "backClassic", "chips": "chipsClassic", "title": null
+    });
+    let res = send(&app, "PUT", uri, Some(wrong), Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    assert_eq!(res.body["code"], "cosmetic_wrong_slot");
+
+    sqlx::query(
+        "INSERT INTO user_achievements (user_id, achievement)
+         SELECT id, unnest(ARRAY['blackjack', 'firstWin']) FROM users",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let res = send(&app, "PUT", uri, Some(gold.clone()), Some(&ana)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["equipped"], gold);
+    assert_eq!(
+        res.body["owned"],
+        json!([
+            "feltGreen",
+            "backClassic",
+            "backGold",
+            "chipsClassic",
+            "titleRookie"
+        ])
+    );
+    let res = send(&app, "GET", uri, None, Some(&ana)).await;
+    assert_eq!(res.body["equipped"], gold);
+
+    // Quitar el título y volver a los de serie.
+    let res = send(&app, "PUT", uri, Some(defaults.clone()), Some(&ana)).await;
+    assert_eq!(res.body["equipped"], defaults);
+    let res = send(&app, "GET", uri, None, None).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+}

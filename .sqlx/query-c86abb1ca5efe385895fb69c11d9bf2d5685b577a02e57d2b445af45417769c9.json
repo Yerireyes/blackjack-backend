@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT felt, card_back, chips, title FROM user_cosmetics WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "felt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "felt"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "card_back",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "card_back"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "chips",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "chips"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "c86abb1ca5efe385895fb69c11d9bf2d5685b577a02e57d2b445af45417769c9"
+}

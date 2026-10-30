@@ -107,7 +107,9 @@ async fn not_found() -> ApiError {
 
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
-    use routes::{achievements, analyze, auth, casual, daily, google, play, ranked, sessions};
+    use routes::{
+        achievements, analyze, auth, casual, cosmetics, daily, google, play, ranked, sessions,
+    };
 
     let analyze_routes = Router::new()
         .route("/analyze/hand", post(analyze::hand))
@@ -141,6 +143,8 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         )
         .route("/me/records", get(casual::records))
         .route("/me/achievements", get(achievements::mine))
+        .route("/cosmetics", get(cosmetics::catalog))
+        .route("/me/cosmetics", get(cosmetics::mine).put(cosmetics::equip))
         .route("/ranked/me", get(ranked::me))
         .route("/ranked/leaderboard", get(ranked::leaderboard))
         .route("/daily/me", get(daily::me))
@@ -169,7 +173,7 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(origin)
         .allow_credentials(true)
-        .allow_methods([Method::GET, Method::POST, Method::PATCH])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT])
         .allow_headers([header::CONTENT_TYPE]);
 
     Router::new()
