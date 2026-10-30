@@ -20,6 +20,8 @@ pub struct Config {
     /// Ráfaga del límite por usuario de las acciones de juego (`/play/*`, crear y
     /// cerrar partidas); después, 5 por segundo.
     pub play_burst: u32,
+    /// Salas multijugador abiertas a la vez (`MAX_ROOMS`).
+    pub max_rooms: usize,
     /// Proxies cuyo `X-Forwarded-For` se acepta para saber la IP del cliente
     /// (`TRUSTED_PROXIES`, separadas por comas; por defecto solo local).
     pub trusted_proxies: Vec<IpAddr>,
@@ -124,6 +126,7 @@ impl Config {
             analyze_burst: var_or("ANALYZE_BURST", 20)?,
             auth_burst: var_or("AUTH_BURST", 10)?,
             play_burst: var_or("PLAY_BURST", 10)?,
+            max_rooms: var_or("MAX_ROOMS", 200)?,
             trusted_proxies: trusted_proxies()?,
             google: GoogleConfig::from_env()?,
             daily_seed_secret,

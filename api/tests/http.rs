@@ -35,6 +35,7 @@ fn config(analyze_burst: u32) -> Config {
         analyze_burst,
         auth_burst: 1000,
         play_burst: 1000,
+        max_rooms: 200,
         trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
         google: None,
         daily_seed_secret: None,

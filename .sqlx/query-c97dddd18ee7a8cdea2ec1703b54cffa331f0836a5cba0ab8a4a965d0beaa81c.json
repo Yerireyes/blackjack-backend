@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.display_name, c.title AS \"title?\"\n           FROM users u LEFT JOIN user_cosmetics c ON c.user_id = u.id\n           WHERE u.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "c97dddd18ee7a8cdea2ec1703b54cffa331f0836a5cba0ab8a4a965d0beaa81c"
+}
