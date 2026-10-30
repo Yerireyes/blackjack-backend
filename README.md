@@ -293,6 +293,7 @@ estrategia, con re-división real):
 | POST | `/daily/attempts` | Empieza el reto de hoy (uno por día) | Sí |
 | GET | `/daily/me` | El intento del reto de hoy | Sí |
 | GET | `/daily/leaderboard?day=AAAA-MM-DD` | Top 100 por saldo final del día | No |
+| GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas | Sí |
 | GET | `/me/records` | Récords de Casual y resultados de Ranked | Sí |
 | GET | `/health` | Estado del servicio y de la base | No |
 
@@ -317,6 +318,10 @@ estrategia, con re-división real):
   con `HMAC-SHA256(DAILY_SEED_SECRET, día)`; un intento de 30 manos por usuario, sin ayudas
   y con revisión, y ranking por saldo final. Detalle en la sección 8.3 de la especificación
   y, para el front, en [docs/Front — Fase 5 Reto diario.md](docs/).
+- **Logros:** se otorgan en el servidor al liquidar cada ronda (y al cerrar temporadas) y
+  vienen en `result.unlocked`; `GET /me/achievements` los lista con la racha de decisiones
+  óptimas. Catálogo y condiciones en la sección 8.4 de la especificación y, para el front, en
+  [docs/Front — Fase 5 Logros.md](docs/).
 - Detalle de cuentas, nombres y Google (incluido por qué nunca se vincula por email
   automáticamente) en la sección 2 de
   [docs/Especificación — Cuentas, Casual y Ranked.md](docs/).
@@ -408,8 +413,8 @@ mazos tarda ~1–2 ms.
 
 ## Pendiente
 
-- Resto de la fase 5: logros, cosméticos y login con Facebook. En Casual falta el récord de
-  racha de decisiones óptimas (sección 8.1).
+- Resto de la fase 5: cosméticos y login con Facebook. La racha de decisiones óptimas no
+  cuenta Casual (sección 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
 - CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
   benchmarks (> 20 %).
