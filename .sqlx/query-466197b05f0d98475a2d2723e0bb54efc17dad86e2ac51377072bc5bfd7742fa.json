@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT achievement, unlocked_at FROM user_achievements\n         WHERE user_id = $1 ORDER BY unlocked_at, achievement",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "achievement",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_achievements",
+            "name": "achievement"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "unlocked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_achievements",
+            "name": "unlocked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "466197b05f0d98475a2d2723e0bb54efc17dad86e2ac51377072bc5bfd7742fa"
+}

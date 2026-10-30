@@ -236,8 +236,9 @@ Fase 5 (extras, solo para dimensionar el modelo):
 - **Reto diario (hecho, ver 8.3):** mismas reglas y mismo zapato para todos ese día. Semilla:
   `HMAC(DAILY_SEED_SECRET, fecha)`, secreta para que no se pueda precalcular. Un intento por
   usuario y día, 30 manos; ranking diario por saldo final.
-- **Logros** («10 decisiones óptimas seguidas», «sobrevive 50 manos con 6:5»…) y
-  **recompensas cosméticas** (paño, dorsos, fichas, títulos). **Nunca** se dan fichas de Ranked.
+- **Logros** (**hechos**, ver 8.4: «10 decisiones óptimas seguidas», «sobrevive 50 manos con
+  6:5»…) y **recompensas cosméticas** (paño, dorsos, fichas, títulos; pendientes). **Nunca**
+  se dan fichas de Ranked.
 
 ---
 
@@ -340,6 +341,7 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 | POST | `/daily/attempts` | Empieza el reto de hoy (409 si ya lo empezó) |
 | GET | `/daily/me` | El intento de hoy o 404 |
 | GET | `/daily/leaderboard?day=` | Top 100 del día por saldo final + la fila del usuario |
+| GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas |
 
 ### 7.2 `RoundView` (lo único que el cliente ve de una ronda)
 
@@ -380,7 +382,8 @@ Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
 `display_name_invalid`. Añadidos al implementar Casual: `run_active`, `no_active_run` y
 `display_name_required` (`not_available` dejó de existir con la fase 4). Del reto diario:
 `no_daily_attempt`, `daily_taken` y `daily_finished`. El detalle por endpoint está en
-«Front — Fase 3 Casual.md», «Front — Fase 4 Ranked.md» y «Front — Fase 5 Reto diario.md».
+«Front — Fase 3 Casual.md», «Front — Fase 4 Ranked.md», «Front — Fase 5 Reto diario.md» y
+«Front — Fase 5 Logros.md».
 
 ---
 
@@ -403,7 +406,7 @@ Errores con el formato de siempre (`{ code, message }`). Códigos nuevos:
    mínimo de manos, revisión. *Tests:* recarga solo una vez en 24 h; `max_bet` según la
    fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
    `review` coincide con `analyze_hand` para el mismo estado. Decisiones en 8.2.
-5. **Extras.** Reto diario (**hecho**, 8.3), logros, cosméticos y Facebook.
+5. **Extras.** Reto diario (**hecho**, 8.3), logros (**hechos**, 8.4), cosméticos y Facebook.
 
 ### 8.1 Cómo quedaron las fases 2 y 3
 
@@ -436,9 +439,9 @@ El neto en fichas es `round(neto × apuesta)` como `Math.round` de JavaScript.
 
 **Pendiente de Casual:**
 
-- Récord «mejor racha de decisiones óptimas»: la evaluación por decisión ya existe (8.2),
-  pero en Casual no se calcula para no gastar 55–300 ms de CPU en cada acción. Se puede
-  activar si el récord lo justifica.
+- Récord «mejor racha de decisiones óptimas»: existe desde los logros (8.4), pero cuenta
+  solo las decisiones revisadas de Ranked y del reto diario. En Casual no se evalúan para no
+  gastar 55–300 ms de CPU en cada acción; se puede activar si hace falta.
 - ~~Cierre automático de rondas sin acciones durante 24 h~~: hecho en la fase 4 (8.2).
 
 ### 8.2 Cómo quedó la fase 4 (Ranked)
@@ -515,6 +518,37 @@ Migración `api/migrations/20261031000001_daily.sql`; rutas en `api/src/routes/d
   del registro y que el orden diverge tras la primera decisión distinta; si importa, la
   alternativa es un zapato por usuario (mismo día, misma dificultad media) a cambio de perder
   «el mismo reto para todos».
+
+### 8.4 Cómo quedaron los logros (fase 5)
+
+Migración `api/migrations/20261101000001_achievements.sql`; lógica en
+`api/src/routes/achievements.rs`.
+
+- **Catálogo en código** (`AchievementId` en el contrato). Los textos los pone el front; las
+  condiciones son estas:
+
+  | Id | Condición |
+  |---|---|
+  | `firstWin` | Ganar una ronda (neto > 0) en cualquier modo del servidor |
+  | `blackjack` | Sacar un blackjack natural |
+  | `perfectSplit` | Dividir y ganar todas las manos de la ronda |
+  | `optimal10` / `optimal50` | 10 / 50 decisiones óptimas seguidas (Ranked y reto diario) |
+  | `sixToFiveSurvivor` | Llegar a 50 manos en una partida casual que paga menos de 3:2 |
+  | `doubleUp` | Llegar a 1.000 fichas en una partida casual |
+  | `rankedQualified` | Llegar a 200 manos en una temporada ranked |
+  | `rankedMedal` | Recibir medalla al cerrar una temporada ranked |
+  | `dailyComplete` | Jugar las 30 manos del reto diario |
+
+- **Cuándo.** Al liquidar cada ronda, dentro de la misma transacción (también si la liquida
+  el cierre de rondas abandonadas). Los nuevos vienen en `result.unlocked` y quedan en la
+  respuesta guardada para la idempotencia. `rankedMedal` se otorga al cerrar la temporada.
+- **Una vez.** `user_achievements (user_id, achievement)` es la clave: un logro ya obtenido
+  no se vuelve a anunciar.
+- **Racha.** `player_stats` guarda la racha actual y la mejor. Cuenta solo las decisiones
+  revisadas (Ranked y reto diario): una óptima suma, cualquier otra vuelve a 0. Las rondas
+  sin decisiones (blackjack, peek) no la cambian. `GET /me/achievements` la devuelve.
+- **Sin recompensas todavía.** Los cosméticos (paño, dorsos, fichas, títulos) se colgarán de
+  estos ids; nunca dan fichas de Ranked.
 
 ---
 

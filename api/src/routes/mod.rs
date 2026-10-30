@@ -1,3 +1,4 @@
+pub mod achievements;
 pub mod analyze;
 pub mod auth;
 pub mod casual;

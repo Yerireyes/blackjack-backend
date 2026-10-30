@@ -488,6 +488,16 @@ pub async fn close_seasons(pool: &PgPool) -> Result<u64, sqlx::Error> {
         )
         .execute(&mut *tx)
         .await?;
+        // Logro `rankedMedal` para quien recibió medalla.
+        sqlx::query!(
+            "INSERT INTO user_achievements (user_id, achievement)
+             SELECT user_id, 'rankedMedal' FROM season_results
+             WHERE season_id = $1 AND medal IS NOT NULL
+             ON CONFLICT DO NOTHING",
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
         sqlx::query!("UPDATE seasons SET closed_at = now() WHERE id = $1", id)
             .execute(&mut *tx)
             .await?;
