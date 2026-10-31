@@ -104,12 +104,17 @@ pub struct Round {
     /// Ranked: cada decisión evaluada con la información que tenía el jugador.
     #[serde(default)]
     pub decisions: Vec<ReviewItem>,
+    /// Con As visible: si el jugador tomó el seguro (`None` si no se ofreció o falta
+    /// decidir).
+    #[serde(default)]
+    pub insurance: Option<bool>,
 }
 
 impl Round {
-    /// Reparte jugador, dealer (visible), jugador y dealer (oculta). Si la ronda no
-    /// requiere decisiones (peek con blackjack del dealer o natural del jugador), el
-    /// dealer juega y se liquida en el acto.
+    /// Reparte jugador, dealer (visible), jugador y dealer (oculta). Con un As visible
+    /// la ronda espera la decisión del seguro (`Phase::Insurance`) antes del peek. Si la
+    /// ronda no requiere decisiones (peek con blackjack del dealer o natural del
+    /// jugador), el dealer juega y se liquida en el acto.
     pub fn deal(shoe: &mut GameShoe, rules: &Rules) -> Result<Round, GameError> {
         let p1 = shoe.draw()?;
         let up = shoe.draw()?;
@@ -131,15 +136,66 @@ impl Round {
             phase: Phase::Player,
             peek_blackjack: false,
             decisions: Vec::new(),
+            insurance: None,
         };
-        let dealer_bj = hand_value(&[up, hole], false).blackjack;
-        if dealer_checks_hole(rules, up.rank()) && dealer_bj {
-            round.peek_blackjack = true;
-            round.play_dealer(shoe, rules)?;
-        } else if round.hands.iter().all(|h| h.done) {
-            round.play_dealer(shoe, rules)?;
+        if up.rank().is_ace() {
+            round.phase = Phase::Insurance;
+        } else {
+            round.after_deal(shoe, rules)?;
         }
         Ok(round)
+    }
+
+    /// Peek y, si nadie tiene que decidir, el turno del dealer.
+    fn after_deal(&mut self, shoe: &mut GameShoe, rules: &Rules) -> Result<(), GameError> {
+        let dealer_bj = hand_value(&[self.dealer.up, self.dealer.hole], false).blackjack;
+        if dealer_checks_hole(rules, self.dealer.up.rank()) && dealer_bj {
+            self.peek_blackjack = true;
+            self.play_dealer(shoe, rules)?;
+        } else if self.hands.iter().all(|h| h.done) {
+            self.play_dealer(shoe, rules)?;
+        }
+        Ok(())
+    }
+
+    /// Se puede tomar el seguro: la ronda lo ofrece y las fichas libres cubren media
+    /// apuesta.
+    pub fn can_insure(&self, free_chips: i64, bet: i64) -> bool {
+        self.phase == Phase::Insurance && free_chips >= insurance_cost(bet)
+    }
+
+    /// Decide el seguro (`take`) y sigue la ronda: peek y, si hace falta, el dealer.
+    /// `free_chips`: fichas del saldo que no están en la apuesta.
+    pub fn insure(
+        &mut self,
+        take: bool,
+        free_chips: i64,
+        bet: i64,
+        shoe: &mut GameShoe,
+        rules: &Rules,
+    ) -> Result<(), GameError> {
+        if self.phase != Phase::Insurance || (take && !self.can_insure(free_chips, bet)) {
+            return Err(GameError::ActionNotAllowed);
+        }
+        self.insurance = Some(take);
+        self.phase = Phase::Player;
+        self.after_deal(shoe, rules)
+    }
+
+    /// Fichas puestas en el seguro.
+    pub fn insurance_chips(&self, bet: i64) -> i64 {
+        if self.insurance == Some(true) {
+            insurance_cost(bet)
+        } else {
+            0
+        }
+    }
+
+    /// Neto del seguro en fichas (solo liquidada y si se tomó): paga 2:1 si el dealer
+    /// tenía blackjack; si no, se pierde.
+    pub fn insurance_net(&self, bet: i64) -> Option<i64> {
+        (self.phase == Phase::Settled && self.insurance == Some(true))
+            .then(|| insurance_net(&self.dealer, bet))
     }
 
     /// Unidades de apuesta en juego: una por mano, dos si se dobló.
@@ -238,9 +294,9 @@ impl Round {
         self.hands.iter().filter_map(|h| h.net).sum()
     }
 
-    /// Neto en fichas: `round(neto × apuesta)`, igual que el front.
+    /// Neto en fichas: `round(neto × apuesta)`, igual que el front, más el seguro.
     pub fn net_chips(&self, bet: i64) -> i64 {
-        chips(self.net_units(), bet)
+        chips(self.net_units(), bet) + self.insurance_net(bet).unwrap_or(0)
     }
 
     /// Cartas sin ver para el jugador: lo que queda en el zapato más la oculta
@@ -269,6 +325,21 @@ impl Round {
 /// `round(x)` como `Math.round` de JavaScript (los medios redondean hacia arriba).
 pub(super) fn chips(units: f64, bet: i64) -> i64 {
     (units * bet as f64 + 0.5).floor() as i64
+}
+
+/// El seguro cuesta media apuesta (las apuestas son múltiplos de 10: siempre entero).
+pub fn insurance_cost(bet: i64) -> i64 {
+    bet / 2
+}
+
+/// Neto del seguro tomado frente al dealer ya revelado: +2× si tenía blackjack, −1× si no.
+pub(super) fn insurance_net(dealer: &Dealer, bet: i64) -> i64 {
+    let cost = insurance_cost(bet);
+    if hand_value(&dealer.cards(), false).blackjack {
+        2 * cost
+    } else {
+        -cost
+    }
 }
 
 /// Lo que el jugador ve de una mano, con el neto en fichas si ya se liquidó.
@@ -324,6 +395,8 @@ pub(super) fn hands_allowed(
             && rules.dealer_peeks
             && !h.from_split
             && hands.len() == 1,
+        // El seguro se decide antes, en su propia fase.
+        insurance: false,
     }
 }
 

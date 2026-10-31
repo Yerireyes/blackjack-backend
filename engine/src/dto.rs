@@ -106,6 +106,12 @@ pub struct AnalyzeHandResponse {
     pub best: Action,
     pub p_bust_on_hit: f64,
     pub dealer: DealerDistribution,
+    /// Solo con un As visible: EV del seguro por ficha puesta en el seguro (paga 2:1),
+    /// `3p − 1` con `p` = probabilidad de que la oculta valga 10. Positivo solo con
+    /// muchos dieces en el zapato. Tomar el seguro con blackjack es el «dinero par».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub insurance_ev: Option<f64>,
     /// Lo mide el binding (WASM/HTTP); el motor no usa reloj y lo deja en 0.
     pub compute_ms: f64,
 }

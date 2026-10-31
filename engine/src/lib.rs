@@ -224,8 +224,15 @@ fn hand_response(
         best,
         p_bust_on_hit: solver.p_bust_on_hit(shoe, hand),
         dealer: solver.dealer_dist(shoe).into(),
+        insurance_ev: solver.up().is_ace().then(|| insurance_ev(shoe)),
         compute_ms: 0.0,
     }
+}
+
+/// EV del seguro por ficha apostada: gana 2 si la oculta vale 10 y pierde 1 si no.
+/// `shoe` son las cartas sin ver, con la oculta dentro.
+pub fn insurance_ev(shoe: &Shoe) -> f64 {
+    3.0 * shoe.prob(Rank::TEN) - 1.0
 }
 
 /// Valida el zapato frente a las cartas visibles y devuelve el `Shoe`.

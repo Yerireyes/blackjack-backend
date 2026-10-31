@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use super::card::hand_value;
 use super::contract::{AllowedActions, RoundPhase as Phase, SeatRoundView, TableRoundView};
 use super::round::{
-    advance_hands, apply_action, chips, dealer_checks_hole, hand_view, hands_allowed, play_dealer,
-    settle_hands, Dealer, PlayerHand,
+    advance_hands, apply_action, chips, dealer_checks_hole, hand_view, hands_allowed,
+    insurance_cost, insurance_net, play_dealer, settle_hands, Dealer, PlayerHand,
 };
 use super::shoe::GameShoe;
 use super::GameError;
@@ -24,6 +24,9 @@ pub struct TableSeat {
     pub bet: i64,
     pub hands: Vec<PlayerHand>,
     pub active: usize,
+    /// Seguro tomado o rechazado (`None`: no se ofreció o falta decidir).
+    #[serde(default)]
+    pub insurance: Option<bool>,
 }
 
 impl TableSeat {
@@ -39,9 +42,23 @@ impl TableSeat {
             .sum()
     }
 
-    /// Neto en fichas (solo liquidada).
-    pub fn net_chips(&self) -> i64 {
-        chips(self.hands.iter().filter_map(|h| h.net).sum(), self.bet)
+    /// Fichas puestas en el seguro.
+    pub fn insurance_chips(&self) -> i64 {
+        if self.insurance == Some(true) {
+            insurance_cost(self.bet)
+        } else {
+            0
+        }
+    }
+
+    /// Neto en fichas, seguro incluido (solo liquidada).
+    pub fn net_chips(&self, dealer: &Dealer) -> i64 {
+        let insurance = if self.insurance == Some(true) {
+            insurance_net(dealer, self.bet)
+        } else {
+            0
+        };
+        chips(self.hands.iter().filter_map(|h| h.net).sum(), self.bet) + insurance
     }
 }
 
@@ -90,6 +107,7 @@ impl TableRound {
                     bet,
                     hands: vec![hand],
                     active: 0,
+                    insurance: None,
                 }
             })
             .collect();
@@ -105,13 +123,62 @@ impl TableRound {
             phase: Phase::Player,
             peek_blackjack: false,
         };
-        if dealer_checks_hole(rules, up.rank()) && hand_value(&[up, hole], false).blackjack {
-            round.peek_blackjack = true;
-            round.finish(shoe, rules)?;
+        if up.rank().is_ace() {
+            round.phase = Phase::Insurance;
         } else {
-            round.next_turn(0, shoe, rules)?;
+            round.after_deal(shoe, rules)?;
         }
         Ok(round)
+    }
+
+    /// Peek y, si no termina ahí, el primer turno.
+    fn after_deal(&mut self, shoe: &mut GameShoe, rules: &Rules) -> Result<(), GameError> {
+        let (up, hole) = (self.dealer.up, self.dealer.hole);
+        if dealer_checks_hole(rules, up.rank()) && hand_value(&[up, hole], false).blackjack {
+            self.peek_blackjack = true;
+            self.finish(shoe, rules)
+        } else {
+            self.next_turn(0, shoe, rules)
+        }
+    }
+
+    /// Asientos que todavía no decidieron el seguro (solo en la fase `insurance`).
+    pub fn pending_insurance(&self) -> Vec<u8> {
+        if self.phase != Phase::Insurance {
+            return Vec::new();
+        }
+        self.seats
+            .iter()
+            .filter(|s| s.insurance.is_none())
+            .map(|s| s.seat)
+            .collect()
+    }
+
+    /// El asiento `seat` decide el seguro. `free_chips`: fichas de su pila fuera de la
+    /// apuesta. Cuando decidieron todos, sigue la ronda (peek y turnos).
+    pub fn insure(
+        &mut self,
+        seat: u8,
+        take: bool,
+        free_chips: i64,
+        shoe: &mut GameShoe,
+        rules: &Rules,
+    ) -> Result<(), GameError> {
+        if self.phase != Phase::Insurance {
+            return Err(GameError::ActionNotAllowed);
+        }
+        let Some(s) = self.seats.iter_mut().find(|s| s.seat == seat) else {
+            return Err(GameError::NotYourTurn);
+        };
+        if s.insurance.is_some() || (take && free_chips < insurance_cost(s.bet)) {
+            return Err(GameError::ActionNotAllowed);
+        }
+        s.insurance = Some(take);
+        if self.seats.iter().all(|s| s.insurance.is_some()) {
+            self.phase = Phase::Player;
+            self.after_deal(shoe, rules)?;
+        }
+        Ok(())
     }
 
     /// El asiento al que le toca decidir.
@@ -211,7 +278,8 @@ impl TableRound {
                     hands: s.hands.iter().map(|h| hand_view(h, s.bet)).collect(),
                     active: s.active as u32,
                     done: s.done(),
-                    net: settled.then(|| s.net_chips()),
+                    insured: s.insurance,
+                    net: settled.then(|| s.net_chips(&self.dealer)),
                 })
                 .collect(),
             dealer: self.dealer.view(),
@@ -287,8 +355,12 @@ mod tests {
         assert_eq!(r.turn_seat(), Some(3), "el blackjack no juega");
         assert!(r.seats[0].hands[0].done);
 
-        // Dealer As + K con peek: termina en el reparto para todos.
-        let (r, _) = deal(&[Ten, Nine, Ace, Seven, Eight, K], &[(1, 10), (2, 30)]);
+        // Dealer As + K con peek: tras el seguro termina en el reparto para todos.
+        let (mut r, mut shoe) = deal(&[Ten, Nine, Ace, Seven, Eight, K], &[(1, 10), (2, 30)]);
+        assert_eq!(r.phase, Phase::Insurance);
+        for seat in [1, 2] {
+            r.insure(seat, false, 100, &mut shoe, &rules).unwrap();
+        }
         assert!(r.peek_blackjack);
         assert_eq!(r.phase, Phase::Settled);
         let v = r.view(&rules, PLENTY);
@@ -329,7 +401,13 @@ mod tests {
             .iter()
             .flat_map(|s| &s.hands)
             .all(|h| h.outcome == Some(HandOutcome::Win)));
-        assert_eq!((r.seats[0].net_chips(), r.seats[1].net_chips()), (20, 10));
+        assert_eq!(
+            (
+                r.seats[0].net_chips(&r.dealer),
+                r.seats[1].net_chips(&r.dealer)
+            ),
+            (20, 10)
+        );
     }
 
     #[test]
@@ -341,5 +419,36 @@ mod tests {
             !r.allowed(&rules, 0).split && !r.allowed(&rules, 0).double,
             "sin fichas extra"
         );
+    }
+
+    #[test]
+    fn each_seat_decides_insurance_before_the_peek() {
+        let rules = vegas();
+        // s1: 10,7 (asegura); s2: 9,8 (no). Dealer As + K: blackjack.
+        let (mut r, mut shoe) = deal(&[Ten, Nine, Ace, Seven, Eight, K], &[(1, 20), (2, 20)]);
+        assert_eq!(r.pending_insurance(), [1, 2]);
+        assert_eq!(r.turn_seat(), None, "nadie juega hasta decidir el seguro");
+        assert_eq!(
+            r.insure(1, true, 9, &mut shoe, &rules),
+            Err(GameError::ActionNotAllowed),
+            "el seguro de 20 cuesta 10"
+        );
+        r.insure(1, true, 10, &mut shoe, &rules).unwrap();
+        assert_eq!(
+            r.insure(1, false, 10, &mut shoe, &rules),
+            Err(GameError::ActionNotAllowed),
+            "ya decidió"
+        );
+        assert_eq!(r.pending_insurance(), [2]);
+        assert_eq!(r.phase, Phase::Insurance);
+        r.insure(2, false, 100, &mut shoe, &rules).unwrap();
+        assert!(r.peek_blackjack);
+        let v = r.view(&rules, PLENTY);
+        assert_eq!(
+            (v.seats[0].insured, v.seats[1].insured),
+            (Some(true), Some(false))
+        );
+        // Asegurado: −20 + 20. Sin seguro: −20.
+        assert_eq!((v.seats[0].net, v.seats[1].net), (Some(0), Some(-20)));
     }
 }

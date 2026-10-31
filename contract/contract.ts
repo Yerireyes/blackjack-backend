@@ -36,7 +36,7 @@ export type CosmeticSlot = "felt" | "cardBack" | "chips" | "title";
  * El turno del dealer se resuelve dentro de la misma respuesta: no hay fase visible
  * para él.
  */
-export type RoundPhase = "player" | "settled";
+export type RoundPhase = "insurance" | "player" | "settled";
 
 /**
  * Figura de la carta, como la escribe el front: "A", "2" … "10", "J", "Q", "K".
@@ -98,6 +98,10 @@ export interface RoundView {
      * El dealer tenía blackjack al revisar la oculta: la ronda terminó en el reparto.
      */
     peekBlackjack: boolean;
+    /**
+     * Seguro: `true`/`false` una vez decidido; falta si no se ofreció o está pendiente.
+     */
+    insured?: boolean;
     wallet: WalletView;
     /**
      * Solo casual: composición restante por rango (0 = As … 9 = diez), con la
@@ -128,7 +132,7 @@ export type Medal = "gold" | "silver" | "bronze" | "top10";
 /**
  * Mensajes del cliente por el WebSocket de la sala.
  */
-export type ClientMessage = { type: "sit"; seat: number } | { type: "leaveSeat" } | { type: "bet"; amount: number } | { type: "action"; action: Action } | { type: "rebuy" } | { type: "react"; reaction: Reaction } | { type: "kick"; playerId: string };
+export type ClientMessage = { type: "sit"; seat: number } | { type: "leaveSeat" } | { type: "bet"; amount: number } | { type: "action"; action: Action } | { type: "rebuy" } | { type: "insurance"; take: boolean } | { type: "react"; reaction: Reaction } | { type: "kick"; playerId: string };
 
 /**
  * Mensajes del servidor por el WebSocket de la sala.
@@ -226,7 +230,11 @@ export interface SeatRoundView {
      */
     done: boolean;
     /**
-     * Neto del asiento en fichas (solo liquidada).
+     * Seguro: `true`/`false` una vez decidido; falta si no se ofreció o está pendiente.
+     */
+    insured?: boolean;
+    /**
+     * Neto del asiento en fichas, seguro incluido (solo liquidada).
      */
     net?: number;
 }
@@ -457,6 +465,14 @@ export interface RoundActionRequest {
 }
 
 /**
+ * `POST /play/rounds/{id}/insurance`: tomar (`take: true`) o rechazar el seguro.
+ */
+export interface InsuranceRequest {
+    take: boolean;
+    idempotencyKey: string;
+}
+
+/**
  * `POST /play/rounds`.
  */
 export interface NewRoundRequest {
@@ -509,6 +525,11 @@ export interface AllowedActions {
     double: boolean;
     split: boolean;
     surrender: boolean;
+    /**
+     * En la fase `insurance`: las fichas alcanzan para el seguro (media apuesta).
+     * Rechazarlo siempre se puede en esa fase.
+     */
+    insurance?: boolean;
 }
 
 export interface AnalyzeDealerRequest {
@@ -565,6 +586,12 @@ export interface AnalyzeHandResponse {
     best: Action;
     pBustOnHit: number;
     dealer: DealerDistribution;
+    /**
+     * Solo con un As visible: EV del seguro por ficha puesta en el seguro (paga 2:1),
+     * `3p − 1` con `p` = probabilidad de que la oculta valga 10. Positivo solo con
+     * muchos dieces en el zapato. Tomar el seguro con blackjack es el «dinero par».
+     */
+    insuranceEv?: number;
     /**
      * Lo mide el binding (WASM/HTTP); el motor no usa reloj y lo deja en 0.
      */
@@ -806,6 +833,10 @@ export interface RoundResult {
      */
     refilled?: number;
     review?: ReviewItem[];
+    /**
+     * Neto del seguro en fichas, ya sumado a `net` (si se tomó).
+     */
+    insuranceNet?: number;
     /**
      * Logros desbloqueados con esta ronda (falta si no hubo ninguno).
      */
