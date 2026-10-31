@@ -322,6 +322,12 @@ estrategia, con re-división real):
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas | Sí |
 | GET | `/me/history` | Historial de rondas liquidadas (`?kind=&before=&limit=`) | Sí |
 | GET | `/me/stats` | Resultados por modo y puntos débiles de las decisiones revisadas | Sí |
+| GET | `/friends` | Amigos (conectados y en qué sala pública), solicitudes e invitaciones | Sí |
+| POST | `/friends/requests` | Pedir amistad por nombre visible | Sí |
+| POST | `/friends/requests/{userId}/accept` · `/decline` | Aceptar, rechazar o cancelar | Sí |
+| POST | `/friends/{userId}/remove` | Dejar de ser amigos | Sí |
+| POST | `/rooms/{code}/invite` | Invitar a un amigo a la sala en la que estás | Sí |
+| POST | `/me/invitations/{id}/dismiss` | Descartar una invitación | Sí |
 | GET | `/cosmetics` | Catálogo de cosméticos y el logro que desbloquea cada uno | No |
 | GET · PUT | `/me/cosmetics` | Cosméticos que tiene y los que tiene puestos | Sí |
 | POST | `/rooms` | Crea una sala multijugador (pública o privada) | Sí |

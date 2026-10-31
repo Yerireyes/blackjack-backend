@@ -344,6 +344,10 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas |
 | GET | `/me/history?kind=&before=&limit=` | Rondas liquidadas, de la más reciente a la más antigua |
 | GET | `/me/stats` | Resultados por modo y estadísticas de decisiones (puntos débiles) |
+| GET | `/friends` | Amigos, solicitudes e invitaciones a salas |
+| POST | `/friends/requests` · `/friends/requests/{userId}/accept` · `/decline` · `/friends/{userId}/remove` | Solicitudes y amistades |
+| POST | `/rooms/{code}/invite` · `/me/invitations/{id}/dismiss` | Invitaciones a salas |
+| GET | `/daily/leaderboard?scope=friends` | El reto diario solo entre el usuario y sus amigos |
 | GET | `/cosmetics` | Catálogo de cosméticos (público) |
 | GET · PUT | `/me/cosmetics` | Los que tiene y los que tiene puestos; `PUT` los cambia |
 
@@ -621,6 +625,24 @@ Lógica en `api/src/routes/stats.rs`; índice `rounds_user_settled` en
 - **Entrenamiento dirigido:** lo arma el front en Práctica (en el navegador), repartiendo
   manos de los `weakSpots` contra esa carta del dealer. El backend no reparte esas manos:
   solo dice cuáles practicar. Casual no aporta datos porque no se revisa.
+
+### 8.8 Amigos
+
+Migración `api/migrations/20261104000001_friends.sql`; rutas en `api/src/routes/friends.rs`.
+
+- **Solicitudes** por nombre visible (misma clave que el registro: sin distinguir
+  mayúsculas). Si el otro ya había pedido, quedan como amigos en el acto. Errores:
+  `user_not_found`, `already_friends`, `request_exists`, `too_many_friends` (máximo 200) y
+  `too_many_requests` (50 pendientes enviadas). Rechazar una recibida y cancelar una enviada
+  son la misma ruta (`decline`). La amistad se guarda en las dos direcciones.
+- **Conectado:** una sesión usada en los últimos 10 minutos o estar en una sala. Si el amigo
+  está en una sala **pública**, `room` la trae; las privadas solo se ven por invitación.
+- **Invitaciones a salas:** solo a amigos y estando conectado a la sala (pública o privada).
+  Duran 30 minutos y solo se muestran mientras la sala siga abierta; invitar otra vez
+  renueva el plazo. La tarea horaria borra las vencidas. No hay aviso en tiempo real: el
+  front pide `GET /friends` cada tanto (sección 3 de «Front — Amigos.md»).
+- **Reto entre amigos:** `GET /daily/leaderboard?scope=friends` cuenta las posiciones solo
+  entre el usuario y sus amigos (necesita sesión).
 
 ---
 
