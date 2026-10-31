@@ -25,6 +25,7 @@ use tower_governor::governor::{GovernorConfig, GovernorConfigBuilder};
 use tower_governor::{GovernorError, GovernorLayer};
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -105,6 +106,40 @@ fn rate_limited(err: GovernorError) -> Response<Body> {
 
 async fn not_found() -> ApiError {
     ApiError::not_found("ruta no encontrada")
+}
+
+/// El front compilado de `STATIC_DIR`, si tiene `index.html`: front y API en el mismo
+/// origen (cookie `SameSite=Lax`, WebSocket y login con Google sin CORS). Las rutas que no
+/// son archivos devuelven `index.html` (la SPA resuelve la pantalla).
+fn web(cfg: &Config) -> Option<Router> {
+    let dir = cfg.static_dir.as_ref()?;
+    let index = dir.join("index.html");
+    if !index.is_file() {
+        tracing::warn!(
+            "STATIC_DIR={} no tiene index.html: no se sirve el front",
+            dir.display()
+        );
+        return None;
+    }
+    let files = ServeDir::new(dir).fallback(ServeFile::new(index));
+    Some(
+        Router::new()
+            .fallback_service(files)
+            .layer(axum::middleware::map_response(web_cache)),
+    )
+}
+
+/// Vite pone un hash en el nombre de todo lo de `/assets/`: se cachea un año. El resto
+/// (`index.html` sobre todo) se revalida siempre, para que un despliegue se vea enseguida.
+async fn web_cache(uri: axum::http::Uri, mut res: Response) -> Response {
+    let value = if uri.path().starts_with("/assets/") && res.status().is_success() {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+    res
 }
 
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
@@ -205,9 +240,15 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT])
         .allow_headers([header::CONTENT_TYPE]);
 
-    Router::new()
-        .nest("/api/v1", api)
-        .fallback(not_found)
+    // Dentro de /api/v1 una ruta desconocida es un 404 JSON, también cuando el resto lo
+    // sirve el front.
+    let api = api.fallback(not_found);
+    let router = Router::new().nest("/api/v1", api);
+    let router = match web(cfg) {
+        Some(web) => router.fallback_service(web),
+        None => router.fallback(not_found),
+    };
+    router
         .layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

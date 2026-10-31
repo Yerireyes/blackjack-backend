@@ -12,6 +12,7 @@ use std::sync::Arc;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request};
 use axum_extra::extract::cookie::CookieJar;
+use ipnet::IpNet;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorError;
 use uuid::Uuid;
@@ -23,18 +24,20 @@ const X_FORWARDED_FOR: &str = "x-forwarded-for";
 /// Clave del límite de tasa: la IP real del cliente.
 #[derive(Clone, Debug)]
 pub struct ClientIpKeyExtractor {
-    trusted: Arc<[IpAddr]>,
+    trusted: Arc<[IpNet]>,
 }
 
 impl ClientIpKeyExtractor {
-    pub fn new(trusted_proxies: &[IpAddr]) -> ClientIpKeyExtractor {
+    /// `trusted_proxies`: IPs sueltas (`/32`, `/128`) o redes enteras, como la interna de
+    /// una plataforma cuyo proxy no tiene IP fija.
+    pub fn new(trusted_proxies: &[IpNet]) -> ClientIpKeyExtractor {
         ClientIpKeyExtractor {
-            trusted: trusted_proxies.iter().map(|ip| ip.to_canonical()).collect(),
+            trusted: trusted_proxies.into(),
         }
     }
 
     fn is_trusted(&self, ip: IpAddr) -> bool {
-        self.trusted.contains(&ip)
+        self.trusted.iter().any(|net| net.contains(&ip))
     }
 
     /// La IP del cliente a partir de la del par TCP y las cabeceras.
@@ -140,7 +143,7 @@ mod tests {
     }
 
     fn local() -> ClientIpKeyExtractor {
-        ClientIpKeyExtractor::new(&[ip("127.0.0.1"), ip("::1")])
+        ClientIpKeyExtractor::new(&[ip("127.0.0.1").into(), ip("::1").into()])
     }
 
     #[test]
@@ -192,5 +195,18 @@ mod tests {
         let h = headers(&["1.2.3.4"]);
         let none = ClientIpKeyExtractor::new(&[]);
         assert_eq!(none.client_ip(ip("127.0.0.1"), &h), ip("127.0.0.1"));
+    }
+
+    #[test]
+    fn trusts_whole_networks() {
+        // El proxy de la plataforma conecta desde cualquier IP de su red interna.
+        let platform = ClientIpKeyExtractor::new(&["10.0.0.0/8".parse().unwrap()]);
+        let h = headers(&["1.2.3.4, 203.0.113.9, 10.1.2.3"]);
+        assert_eq!(platform.client_ip(ip("10.200.0.5"), &h), ip("203.0.113.9"));
+        assert_eq!(
+            platform.client_ip(ip("192.0.2.1"), &h),
+            ip("192.0.2.1"),
+            "fuera de la red no se confía"
+        );
     }
 }
