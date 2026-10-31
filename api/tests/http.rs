@@ -39,6 +39,7 @@ fn config(analyze_burst: u32) -> Config {
         trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
         google: None,
         daily_seed_secret: None,
+        metrics_token: None,
     }
 }
 
@@ -1878,8 +1879,9 @@ async fn ranked_leaderboard_and_seasons(pool: PgPool) {
     // La ronda nueva va a la cuenta de la temporada actual.
     assert_ne!(res.body["contextId"], b["id"]);
     let round = res.body["id"].as_str().unwrap().to_string();
-    // Simula una ronda que empezó en la temporada vieja y sigue en juego.
-    sqlx::query("UPDATE rounds SET context_id = $1::uuid")
+    // Simula una ronda que empezó en la temporada vieja y sigue en juego (el zapato es
+    // aleatorio: el reparto pudo haberla terminado con un blackjack).
+    sqlx::query("UPDATE rounds SET context_id = $1::uuid, status = 'active'")
         .bind(b["id"].as_str().unwrap())
         .execute(&pool)
         .await
@@ -2431,4 +2433,58 @@ async fn insurance_in_casual(pool: PgPool) {
         insure(&app, &ana, &round, false, &key()).await.body["phase"],
         "player"
     );
+}
+
+// ---- Métricas ----
+
+async fn metrics(app: &Router, token: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder().uri("/api/v1/metrics");
+    if let Some(t) = token {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    let mut req = req.body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn metrics_need_their_token(pool: PgPool) {
+    // Sin METRICS_TOKEN la ruta no existe.
+    let app = test_app(pool.clone(), 10);
+    assert_eq!(metrics(&app, None).await.0, StatusCode::NOT_FOUND);
+
+    let token = "token-de-metricas-de-al-menos-32-caracteres";
+    let mut cfg = config(10);
+    cfg.metrics_token = Some(token.into());
+    let app = app_with(pool, &cfg);
+    register(&app, "ana@example.com").await;
+    assert_eq!(metrics(&app, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        metrics(&app, Some("otro")).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, text) = metrics(&app, Some(token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("\nbj_users 1\n"), "{text}");
+    assert!(
+        text.contains("bj_http_responses_total{class=\"2xx\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("bj_http_responses_total{class=\"4xx\"} 2"),
+        "{text}"
+    );
+    assert!(
+        text.contains("bj_rounds_active{kind=\"casual\"} 0"),
+        "{text}"
+    );
+    assert!(text.contains("\nbj_rooms_open 0\n"), "{text}");
+}
+
+fn app_with(pool: PgPool, cfg: &Config) -> Router {
+    app(AppState::new(pool, cfg), cfg, &RateLimits::new(cfg))
 }

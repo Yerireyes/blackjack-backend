@@ -30,6 +30,8 @@ pub struct Config {
     /// Clave de la semilla del reto diario (`DAILY_SEED_SECRET`). `None`: se deriva de
     /// `JWT_SECRET`.
     pub daily_seed_secret: Option<Vec<u8>>,
+    /// Token para `GET /metrics` (`METRICS_TOKEN`). Sin él, las métricas no se sirven.
+    pub metrics_token: Option<String>,
 }
 
 /// Cliente OAuth de Google. Las URLs de Google se pueden cambiar para los tests.
@@ -116,7 +118,11 @@ impl Config {
         if daily_seed_secret.as_ref().is_some_and(|s| s.len() < 32) {
             return Err("DAILY_SEED_SECRET debe tener al menos 32 caracteres".into());
         }
-        Ok(Config {
+        let metrics_token = var_opt("METRICS_TOKEN");
+        if metrics_token.as_ref().is_some_and(|t| t.len() < 32) {
+            return Err("METRICS_TOKEN debe tener al menos 32 caracteres".into());
+        }
+        let cfg = Config {
             database_url: var("DATABASE_URL")?,
             jwt_secret,
             bind_addr: var_or("BIND_ADDR", SocketAddr::from(([127, 0, 0, 1], 8080)))?,
@@ -130,6 +136,71 @@ impl Config {
             trusted_proxies: trusted_proxies()?,
             google: GoogleConfig::from_env()?,
             daily_seed_secret,
-        })
+            metrics_token,
+        };
+        cfg.check_origin()?;
+        Ok(cfg)
+    }
+
+    /// El origen del front es una URL `http(s)://host[:puerto]` sin ruta, y con HTTPS la
+    /// cookie de sesión tiene que ser `Secure` (si no, viajaría también por HTTP).
+    pub fn check_origin(&self) -> Result<(), String> {
+        let origin = &self.frontend_origin;
+        let rest = origin
+            .strip_prefix("https://")
+            .or_else(|| origin.strip_prefix("http://"))
+            .ok_or_else(|| {
+                format!("FRONTEND_ORIGIN debe empezar con http:// o https://: {origin}")
+            })?;
+        if rest.is_empty() || rest.contains('/') {
+            return Err(format!(
+                "FRONTEND_ORIGIN es solo el origen, sin ruta ni barra final: {origin}"
+            ));
+        }
+        if origin.starts_with("https://") && !self.cookie_secure {
+            return Err(
+                "con FRONTEND_ORIGIN en https:// hace falta COOKIE_SECURE=true (producción)".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(origin: &str, secure: bool) -> Config {
+        Config {
+            database_url: String::new(),
+            jwt_secret: vec![0; 32],
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            frontend_origin: origin.into(),
+            cookie_secure: secure,
+            analyze_replenish_ms: 200,
+            analyze_burst: 20,
+            auth_burst: 10,
+            play_burst: 10,
+            max_rooms: 200,
+            trusted_proxies: Vec::new(),
+            google: None,
+            daily_seed_secret: None,
+            metrics_token: None,
+        }
+    }
+
+    #[test]
+    fn https_origin_requires_secure_cookies() {
+        assert!(cfg("http://localhost:5180", false).check_origin().is_ok());
+        assert!(cfg("https://blackjack.example", true)
+            .check_origin()
+            .is_ok());
+        assert!(cfg("https://blackjack.example", false)
+            .check_origin()
+            .is_err());
+        assert!(cfg("https://blackjack.example/", true)
+            .check_origin()
+            .is_err());
+        assert!(cfg("blackjack.example", true).check_origin().is_err());
     }
 }

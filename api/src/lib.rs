@@ -6,6 +6,7 @@ pub mod client_ip;
 pub mod config;
 pub mod error;
 pub mod extract;
+pub mod metrics;
 pub mod names;
 pub mod rooms;
 pub mod routes;
@@ -164,12 +165,17 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/sessions/{id}/hands", post(sessions::add_hand))
         .route("/sessions/{id}/stats", get(sessions::stats))
         .route("/sessions/{id}/end", post(sessions::end))
-        .route("/health", get(routes::health));
+        .route("/health", get(routes::health))
+        .route("/metrics", get(metrics::serve));
 
     let api = analyze_routes
         .merge(auth_routes)
         .merge(play_routes)
         .merge(other_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            metrics::count,
+        ))
         .with_state(state);
 
     let origin = cfg

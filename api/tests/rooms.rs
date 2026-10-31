@@ -36,6 +36,7 @@ fn config() -> Config {
         trusted_proxies: vec!["127.0.0.1".parse().unwrap()],
         google: None,
         daily_seed_secret: None,
+        metrics_token: None,
     }
 }
 

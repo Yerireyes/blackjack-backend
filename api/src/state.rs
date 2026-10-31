@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::auth::JwtKeys;
 use crate::config::{Config, GoogleConfig};
+use crate::metrics::Metrics;
 use crate::rooms::{Rooms, RoomsConfig};
 
 #[derive(Clone)]
@@ -25,6 +26,7 @@ pub struct AppState {
     pub daily_seed: Arc<[u8]>,
     /// Salas multijugador (en memoria).
     pub rooms: Arc<Rooms>,
+    pub metrics: Arc<Metrics>,
 }
 
 /// Cliente OAuth de Google con su cliente HTTP.
@@ -65,6 +67,7 @@ impl AppState {
             cookie_key,
             daily_seed,
             rooms: Arc::new(Rooms::new(RoomsConfig::new(cfg.max_rooms))),
+            metrics: Arc::new(Metrics::new(cfg.metrics_token.clone())),
         }
     }
 }

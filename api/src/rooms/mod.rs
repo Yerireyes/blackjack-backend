@@ -200,6 +200,21 @@ impl Rooms {
         self.lock().len()
     }
 
+    /// Salas abiertas, jugadores sentados y espectadores, para las métricas.
+    pub fn stats(&self) -> (usize, usize, usize) {
+        let map = self.lock();
+        let (seated, spectators) = map
+            .values()
+            .filter_map(|h| {
+                h.summary
+                    .read()
+                    .ok()
+                    .map(|s| (s.info.seated, s.info.spectators))
+            })
+            .fold((0, 0), |(a, b), (s, e)| (a + s as usize, b + e as usize));
+        (map.len(), seated, spectators)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
