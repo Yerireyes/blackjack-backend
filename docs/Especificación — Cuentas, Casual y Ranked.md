@@ -614,7 +614,8 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
       servidor, nunca vincular por email automáticamente (solo de forma explícita con
       sesión) y crear cuentas solo con email verificado.
 - [x] Límite de tasa en registro, login, OAuth y acciones de juego.
-- [ ] Cookies `Secure` en producción (`cookie_secure`); CORS solo para `FRONTEND_ORIGIN`.
+- [x] Cookies `Secure` en producción (`cookie_secure`); CORS solo para `FRONTEND_ORIGIN`. La
+      API no arranca con `FRONTEND_ORIGIN` en `https://` y `COOKIE_SECURE` apagado.
 - [x] **Sesiones revocables.** Tabla `auth_sessions (id, user_id, created_at, expires_at,
       revoked_at, last_seen_at, user_agent)`; el JWT lleva su `id` como `sid`. Cada petición
       autenticada comprueba que la fila exista, no esté revocada y no haya vencido (una
