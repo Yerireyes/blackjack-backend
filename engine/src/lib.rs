@@ -86,7 +86,10 @@ pub fn analyze_dealer(req: AnalyzeDealerRequest) -> Result<AnalyzeDealerResponse
     let (dist, p_bust_next) = match req.hole {
         Some(_) => {
             let dealer = solver.dealer_mut();
-            (dealer.with_cards(&cards, &shoe), dealer.p_bust_next(&cards, &shoe))
+            (
+                dealer.with_cards(&cards, &shoe),
+                dealer.p_bust_next(&cards, &shoe),
+            )
         }
         None => (solver.dealer_dist(&shoe), None),
     };

@@ -123,9 +123,24 @@ pub struct Room {
     closed: bool,
 }
 
-fn error(code: &str, message: &str) -> ServerMessage {
-    ServerMessage::Error {
-        code: code.into(),
+/// Una orden rechazada; se manda como `error` y la conexión sigue.
+struct Reject {
+    code: &'static str,
+    message: String,
+}
+
+impl From<Reject> for ServerMessage {
+    fn from(r: Reject) -> ServerMessage {
+        ServerMessage::Error {
+            code: r.code.into(),
+            message: r.message,
+        }
+    }
+}
+
+fn error(code: &'static str, message: &str) -> Reject {
+    Reject {
+        code,
         message: message.into(),
     }
 }
@@ -324,7 +339,7 @@ impl Room {
             }
             Command::Client { user, msg } => {
                 if let Err(e) = self.client(user, msg) {
-                    self.send_to(user, &e);
+                    self.send_to(user, &e.into());
                 }
             }
         }
@@ -341,7 +356,7 @@ impl Room {
         Ok(())
     }
 
-    fn client(&mut self, user: Uuid, msg: ClientMessage) -> Result<(), ServerMessage> {
+    fn client(&mut self, user: Uuid, msg: ClientMessage) -> Result<(), Reject> {
         match msg {
             ClientMessage::Sit { seat } => self.sit(user, seat),
             ClientMessage::LeaveSeat => {
@@ -436,7 +451,7 @@ impl Room {
         }
     }
 
-    fn sit(&mut self, user: Uuid, seat: u8) -> Result<(), ServerMessage> {
+    fn sit(&mut self, user: Uuid, seat: u8) -> Result<(), Reject> {
         if seat == 0 || seat as usize > self.seats.len() {
             return Err(error("bad_request", "ese asiento no existe"));
         }
@@ -471,7 +486,7 @@ impl Room {
         Ok(())
     }
 
-    fn bet(&mut self, user: Uuid, amount: i64) -> Result<(), ServerMessage> {
+    fn bet(&mut self, user: Uuid, amount: i64) -> Result<(), Reject> {
         let i = self
             .seat_index_of(user)
             .ok_or_else(|| error("not_seated", "no estás sentado"))?;
@@ -588,7 +603,7 @@ impl Room {
     }
 
     /// Una acción del asiento `seat` (1..), que tiene que estar en turno.
-    fn play(&mut self, seat: u8, action: Action) -> Result<(), ServerMessage> {
+    fn play(&mut self, seat: u8, action: Action) -> Result<(), Reject> {
         let Phase::Playing { round, .. } = &mut self.phase else {
             return Err(error("not_your_turn", "no es tu turno"));
         };
@@ -639,7 +654,7 @@ impl Room {
     fn void_round(&mut self) {
         self.shoe = (self.shoe_factory)(self.rules.decks);
         let voided = error("round_voided", "se acabó el zapato: la ronda se anuló");
-        self.broadcast(&voided);
+        self.broadcast(&voided.into());
         self.after_results();
     }
 

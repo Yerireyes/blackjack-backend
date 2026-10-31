@@ -229,7 +229,12 @@ fn split_from_split_hand_is_never_exact() {
     assert!(res.actions.iter().all(|a| a.action != Action::Split));
 }
 
-fn dealer_with_cards(rules: &Rules, up: Rank, hole: Rank, drawn: &[Rank]) -> engine::AnalyzeDealerResponse {
+fn dealer_with_cards(
+    rules: &Rules,
+    up: Rank,
+    hole: Rank,
+    drawn: &[Rank],
+) -> engine::AnalyzeDealerResponse {
     let mut visible = vec![up, hole];
     visible.extend_from_slice(drawn);
     analyze_dealer(AnalyzeDealerRequest {
@@ -285,8 +290,13 @@ fn dealer_standing_or_bust_has_no_next_bust() {
         dealer_hits_soft17: true,
         ..rules.clone()
     };
-    assert!(dealer_with_cards(&h17, Rank::ACE, r(5), &[]).p_bust_next.is_some());
-    assert_eq!(dealer_with_cards(&rules, Rank::ACE, r(5), &[]).p_bust_next, None);
+    assert!(dealer_with_cards(&h17, Rank::ACE, r(5), &[])
+        .p_bust_next
+        .is_some());
+    assert_eq!(
+        dealer_with_cards(&rules, Rank::ACE, r(5), &[]).p_bust_next,
+        None
+    );
 }
 
 #[test]

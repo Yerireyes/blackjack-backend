@@ -959,6 +959,9 @@ pub enum ClientMessage {
     rename_all_fields = "camelCase"
 )]
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+// `State` lleva la sala entera y las demás variantes son chicas: es un mensaje que solo se
+// serializa, así que no vale la pena boxearlo.
+#[allow(clippy::large_enum_variant)]
 pub enum ServerMessage {
     /// Al conectar: quién es el usuario en la sala.
     Welcome {

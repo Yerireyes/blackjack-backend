@@ -386,8 +386,7 @@ pub(super) fn advance_hands(
     shoe: &mut GameShoe,
     rules: &Rules,
 ) -> Result<bool, GameError> {
-    for i in *active..hands.len() {
-        let h = &mut hands[i];
+    for (i, h) in hands.iter_mut().enumerate().skip(*active) {
         if h.done {
             continue;
         }
