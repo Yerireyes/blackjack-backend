@@ -177,6 +177,21 @@ npm run db:migrate       # aplica migraciones con sqlx-cli
 npm run sqlx:prepare     # regenera .sqlx tras cambiar consultas SQL
 ```
 
+### CI (GitHub Actions)
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre en cada PR y en cada push a
+`main`, en dos trabajos en paralelo:
+
+- **Rust:** `cargo fmt --check`, `cargo clippy -D warnings` y `cargo test --workspace` contra
+  un PostgreSQL 18 de servicio. Compila con `SQLX_OFFLINE=true`, así que una consulta nueva
+  sin `npm run sqlx:prepare` hace fallar la CI.
+- **WASM y contrato:** `npm run build:wasm`, `npm run check:contract` (falla si
+  `contract.ts` no coincide con Rust) y `npm run smoke:wasm`.
+
+Para que un PR no se pueda fusionar con la CI en rojo: en GitHub, *Settings → Branches →
+Branch protection rules* para `main`, con «Require status checks to pass» y los dos
+trabajos marcados.
+
 Uso del motor desde el front (Web Worker), con la dependencia
 `"@bj/engine-wasm": "file:../Backend/engine-wasm/pkg"`:
 
@@ -445,5 +460,6 @@ mazos tarda ~1–2 ms.
 - Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
   óptimas no cuenta Casual (sección 8.1).
 - Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
-- CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
-  benchmarks (> 20 %).
+- CI: comparar benchmarks entre ramas (avisar si algo empeora más de un 20 %). Las máquinas
+  de GitHub dan tiempos muy variables, así que hace falta un runner fijo o muchas
+  repeticiones para que sea confiable.
