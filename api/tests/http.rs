@@ -1301,7 +1301,8 @@ async fn casual_round_flow(pool: PgPool) {
     assert_eq!(view["dealer"]["hole"], Value::Null, "la oculta no se ve");
     assert_eq!(
         view["allowed"],
-        json!({ "hit": true, "stand": true, "double": true, "split": false, "surrender": true })
+        json!({ "hit": true, "stand": true, "double": true, "split": false, "surrender": true,
+                "insurance": false })
     );
     assert_eq!(view["peekBlackjack"], false);
     assert_eq!(view["wallet"], json!({ "balance": 500, "maxBet": 500 }));
@@ -1353,12 +1354,13 @@ async fn casual_round_flow(pool: PgPool) {
     assert_eq!(res.body["hands"], 1);
     assert_eq!(res.body["peak"], 500);
 
-    // Peek con blackjack del dealer: la ronda termina en el reparto.
-    stack(&pool, &run, 6, &[Ten, Ace, Seven, K]).await;
+    // Peek con blackjack del dealer (K visible, As oculto): termina en el reparto. Con
+    // un As visible primero se ofrecería el seguro (ver `insurance_in_casual`).
+    stack(&pool, &run, 6, &[Ten, K, Seven, Ace]).await;
     let res = deal_round(&app, &ana, 100, &key()).await;
     assert_eq!(res.body["phase"], "settled");
     assert_eq!(res.body["peekBlackjack"], true);
-    assert_eq!(res.body["dealer"]["hole"]["rank"], "K");
+    assert_eq!(res.body["dealer"]["hole"]["rank"], "A");
     assert_eq!(res.body["result"]["net"], -100);
     assert_eq!(res.body["wallet"]["balance"], 350);
 
@@ -2349,4 +2351,84 @@ async fn titles_show_in_leaderboards(pool: PgPool) {
         assert!(row("beto").get("title").is_none(), "{uri}: sin título");
         assert_eq!(res.body["me"]["title"], "titleRookie", "{uri}");
     }
+}
+
+// ---- Seguro ----
+
+async fn insure(app: &Router, cookie: &str, round: &str, take: bool, key: &str) -> Res {
+    send(
+        app,
+        "POST",
+        &format!("/api/v1/play/rounds/{round}/insurance"),
+        Some(json!({ "take": take, "idempotencyKey": key })),
+        Some(cookie),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn insurance_in_casual(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let run = new_run(&app, &ana, "vegas").await;
+
+    // 10,7 contra As + K: se ofrece el seguro antes del peek.
+    stack(&pool, &run, 6, &[Ten, Ace, Seven, K]).await;
+    let res = deal_round(&app, &ana, 20, &key()).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.body);
+    let view = res.body;
+    let round = view["id"].as_str().unwrap().to_string();
+    assert_eq!(view["phase"], "insurance");
+    assert_eq!(
+        view["dealer"]["hole"],
+        Value::Null,
+        "el peek todavía no ocurrió"
+    );
+    assert_eq!(view["allowed"]["insurance"], true);
+    assert_eq!(view["allowed"]["hit"], false);
+    assert!(view.get("insured").is_none());
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    assert_eq!(res.body["code"], "action_not_allowed");
+
+    // Con seguro: la mano pierde 20 y el seguro (10) gana 20.
+    let k = key();
+    let res = insure(&app, &ana, &round, true, &k).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["phase"], "settled");
+    assert_eq!(res.body["peekBlackjack"], true);
+    assert_eq!(res.body["insured"], true);
+    assert_eq!(res.body["result"]["insuranceNet"], 20);
+    assert_eq!(res.body["result"]["net"], 0);
+    assert_eq!(res.body["wallet"]["balance"], 500);
+    // Misma clave, misma respuesta; la ronda ya terminó para una clave nueva.
+    assert_eq!(insure(&app, &ana, &round, true, &k).await.body, res.body);
+    let res = insure(&app, &ana, &round, false, &key()).await;
+    assert_eq!(res.body["code"], "no_active_round");
+
+    // 10,9 contra As + 7: sin seguro se juega normal y gana a 18.
+    stack(&pool, &run, 6, &[Ten, Ace, Nine, Seven]).await;
+    let round = deal_round(&app, &ana, 20, &key()).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = insure(&app, &ana, &round, false, &key()).await;
+    assert_eq!(res.body["phase"], "player");
+    assert_eq!(res.body["insured"], false);
+    let res = act(&app, &ana, &round, "stand", &key()).await;
+    assert_eq!(res.body["result"]["net"], 20);
+    assert!(res.body["result"].get("insuranceNet").is_none());
+
+    // Sin fichas para la media apuesta no se puede asegurar.
+    set_balance(&pool, &run, 20).await;
+    stack(&pool, &run, 6, &[Ten, Ace, Nine, Seven]).await;
+    let res = deal_round(&app, &ana, 20, &key()).await;
+    assert_eq!(res.body["allowed"]["insurance"], false);
+    let round = res.body["id"].as_str().unwrap().to_string();
+    let res = insure(&app, &ana, &round, true, &key()).await;
+    assert_eq!(res.body["code"], "action_not_allowed");
+    assert_eq!(
+        insure(&app, &ana, &round, false, &key()).await.body["phase"],
+        "player"
+    );
 }

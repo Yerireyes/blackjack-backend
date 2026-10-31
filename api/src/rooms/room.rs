@@ -253,12 +253,18 @@ impl Room {
         enum Due {
             Deal,
             TimeOut(u8),
+            /// Se acabó el tiempo del seguro: quien no decidió, no lo toma.
+            NoInsurance(Vec<u8>),
             Next,
         }
         let due = match &self.phase {
             Phase::Betting { deadline, .. } if now >= *deadline => Some(Due::Deal),
             Phase::Playing { deadline, round } if now >= *deadline => {
-                round.turn_seat().map(Due::TimeOut)
+                if round.phase == RoundPhase::Insurance {
+                    Some(Due::NoInsurance(round.pending_insurance()))
+                } else {
+                    round.turn_seat().map(Due::TimeOut)
+                }
             }
             Phase::Results { deadline, .. } if now >= *deadline => Some(Due::Next),
             _ => None,
@@ -268,6 +274,11 @@ impl Room {
             // Se acabó el tiempo: el servidor se planta por el jugador.
             Some(Due::TimeOut(seat)) => {
                 let _ = self.play(seat, Action::Stand);
+            }
+            Some(Due::NoInsurance(seats)) => {
+                for seat in seats {
+                    let _ = self.insure(seat, false);
+                }
             }
             Some(Due::Next) => self.after_results(),
             None => {}
@@ -381,6 +392,12 @@ impl Room {
                     return Err(error("not_your_turn", "no es tu turno"));
                 }
                 self.play(i as u8 + 1, action)
+            }
+            ClientMessage::Insurance { take } => {
+                let i = self
+                    .seat_index_of(user)
+                    .ok_or_else(|| error("not_seated", "no estás sentado"))?;
+                self.insure(i as u8 + 1, take)
             }
             ClientMessage::Rebuy => {
                 let i = self.seat_index_of(user);
@@ -588,10 +605,19 @@ impl Room {
         let leaving = round
             .turn_seat()
             .is_some_and(|s| self.seats[s as usize - 1].leaving);
+        // Quien se va no toma el seguro.
+        let declines: Vec<u8> = round
+            .pending_insurance()
+            .into_iter()
+            .filter(|&s| self.seats[s as usize - 1].leaving)
+            .collect();
         self.phase = Phase::Playing {
             round,
             deadline: Instant::now() + self.cfg.turn_time,
         };
+        for seat in declines {
+            let _ = self.insure(seat, false);
+        }
         let turn = match &self.phase {
             Phase::Playing { round, .. } if leaving => round.turn_seat(),
             _ => None,
@@ -600,6 +626,46 @@ impl Room {
             let _ = self.play(seat, Action::Stand);
         }
         self.dirty = true;
+    }
+
+    /// El asiento `seat` toma o rechaza el seguro. Mientras falten decisiones el tiempo
+    /// del seguro no se reinicia; cuando decidieron todos, sigue la ronda.
+    fn insure(&mut self, seat: u8, take: bool) -> Result<(), Reject> {
+        let Phase::Playing { round, .. } = &mut self.phase else {
+            return Err(error("action_not_allowed", "ahora no se ofrece el seguro"));
+        };
+        // Fichas de la pila fuera de la apuesta (en el seguro todavía no hay dobles).
+        let free = self.seats[seat as usize - 1]
+            .user
+            .and_then(|u| self.wallets.get(&u))
+            .zip(round.seats.iter().find(|s| s.seat == seat))
+            .map_or(0, |(w, s)| w.stack - s.bet);
+        match round.insure(seat, take, free, &mut self.shoe, &self.rules) {
+            Ok(()) if round.phase == RoundPhase::Insurance => {
+                self.dirty = true;
+                Ok(())
+            }
+            Ok(()) => {
+                let Phase::Playing { round, .. } =
+                    std::mem::replace(&mut self.phase, Phase::Waiting)
+                else {
+                    unreachable!()
+                };
+                self.continue_round(round);
+                Ok(())
+            }
+            Err(GameError::NotYourTurn) => {
+                Err(error("not_in_round", "no tienes mano en esta ronda"))
+            }
+            Err(GameError::ActionNotAllowed) => Err(error(
+                "action_not_allowed",
+                "el seguro ya se decidió, no se ofrece o no te alcanza la pila",
+            )),
+            Err(GameError::ShoeEmpty) => {
+                self.void_round();
+                Ok(())
+            }
+        }
     }
 
     /// Una acción del asiento `seat` (1..), que tiene que estar en turno.
@@ -611,7 +677,9 @@ impl Room {
             .user
             .and_then(|u| self.wallets.get(&u))
             .zip(round.seats.iter().find(|s| s.seat == seat))
-            .map_or(0, |(w, s)| spare_units(w.stack, s.bet, s.staked_units()));
+            .map_or(0, |(w, s)| {
+                spare_units(w.stack - s.insurance_chips(), s.bet, s.staked_units())
+            });
         match round.act(seat, action, &mut self.shoe, &self.rules, spare) {
             Ok(()) => {
                 let Phase::Playing { round, .. } =
@@ -638,7 +706,7 @@ impl Room {
         for s in &round.seats {
             let user = self.seats[s.seat as usize - 1].user;
             if let Some(w) = user.and_then(|u| self.wallets.get_mut(&u)) {
-                w.stack = (w.stack + s.net_chips()).max(0);
+                w.stack = (w.stack + s.net_chips(&round.dealer)).max(0);
                 w.hands += 1;
             }
         }
@@ -708,12 +776,17 @@ impl Room {
             if round.seats.iter().any(|s| s.seat as usize == i + 1));
         if playing {
             self.seats[i].leaving = true;
-            let turn = match &self.phase {
-                Phase::Playing { round, .. } => round.turn_seat(),
-                _ => None,
+            let seat = i as u8 + 1;
+            let (turn, insuring) = match &self.phase {
+                Phase::Playing { round, .. } => {
+                    (round.turn_seat(), round.pending_insurance().contains(&seat))
+                }
+                _ => (None, false),
             };
-            if turn == Some(i as u8 + 1) {
-                let _ = self.play(i as u8 + 1, Action::Stand);
+            if insuring {
+                let _ = self.insure(seat, false);
+            } else if turn == Some(seat) {
+                let _ = self.play(seat, Action::Stand);
             }
         } else {
             self.free_seat(i);
@@ -837,7 +910,11 @@ impl Room {
                         .user
                         .and_then(|u| self.wallets.get(&u))?;
                     let s = r.seats.iter().find(|s| s.seat == seat)?;
-                    Some(spare_units(w.stack, s.bet, s.staked_units()))
+                    Some(spare_units(
+                        w.stack - s.insurance_chips(),
+                        s.bet,
+                        s.staked_units(),
+                    ))
                 })
                 .unwrap_or(0);
             r.view(&self.rules, spare)
