@@ -148,13 +148,13 @@ interface Me {
   por IP: ráfaga de `AUTH_BURST` (10) y después una petición cada 6 s.
 - Una contraseña incorrecta en una acción con sesión es 403 `invalid_password`, nunca 401:
   para el front, un 401 con sesión significa que la sesión se cerró.
-- Front y API comparten origen (proxy de Vite en desarrollo, reverse proxy en producción),
+- Front y API comparten origen (proxy de Vite en desarrollo; en producción la API sirve también el front),
   así que el front no depende de CORS. CORS sigue restringido a `FRONTEND_ORIGIN` y permite
   `PATCH`, solo como resguardo.
 
-**Fuera de alcance de esta fase:** recuperación de contraseña por email (requiere un servicio
-de correo), cambiar la contraseña o crear una en cuentas de Google, Facebook y borrar la
-cuenta.
+**Fuera del proyecto** (decisión del 2026-10-31): recuperación de contraseña por email
+(requiere un servicio de correo) y Facebook. **Sin hacer:** cambiar la contraseña o crear una
+en cuentas de Google, y borrar la cuenta.
 
 ---
 
@@ -417,7 +417,7 @@ y cosméticos).
    fórmula; el ranking excluye a quien tenga menos de 200 manos; sin `shoeCounts` en ranked;
    `review` coincide con `analyze_hand` para el mismo estado. Decisiones en 8.2.
 5. **Extras.** Reto diario (**hecho**, 8.3), logros (**hechos**, 8.4), cosméticos
-   (**hechos**, 8.5) y Facebook (pendiente).
+   (**hechos**, 8.5). Facebook queda fuera del proyecto (decisión del 2026-10-31).
 
 ### 8.1 Cómo quedaron las fases 2 y 3
 
