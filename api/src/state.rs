@@ -58,6 +58,10 @@ impl AppState {
                 hasher.finalize().to_vec().into()
             }
         };
+        let rooms = Arc::new(Rooms::new(
+            RoomsConfig::new(cfg.max_rooms),
+            Some(pool.clone()),
+        ));
         AppState {
             pool,
             jwt: JwtKeys::new(&cfg.jwt_secret),
@@ -66,7 +70,7 @@ impl AppState {
             google,
             cookie_key,
             daily_seed,
-            rooms: Arc::new(Rooms::new(RoomsConfig::new(cfg.max_rooms))),
+            rooms,
             metrics: Arc::new(Metrics::new(cfg.metrics_token.clone())),
         }
     }

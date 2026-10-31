@@ -25,7 +25,7 @@ export interface CardView {
  * Cosméticos. Solo cambian cómo se ve la mesa; nunca dan fichas ni ventaja. Los
  * dibuja el front.
  */
-export type CosmeticId = "feltGreen" | "feltBlue" | "feltRed" | "feltBlack" | "backClassic" | "backGold" | "backMidnight" | "chipsClassic" | "chipsNeon" | "chipsGold" | "titleRookie" | "titleCoolHead" | "titleByTheBook" | "titleMedalist";
+export type CosmeticId = "feltGreen" | "feltBlue" | "feltRed" | "feltBlack" | "backClassic" | "backGold" | "backMidnight" | "chipsClassic" | "chipsNeon" | "chipsGold" | "titleRookie" | "titleCoolHead" | "titleByTheBook" | "titleMedalist" | "titleChampion";
 
 /**
  * Decisiones en una situación.
@@ -47,6 +47,23 @@ export interface SpotStats {
  * Dónde se usa un cosmético.
  */
 export type CosmeticSlot = "felt" | "cardBack" | "chips" | "title";
+
+/**
+ * El torneo de la sala.
+ */
+export interface TournamentView {
+    status: TournamentStatus;
+    hands: number;
+    /**
+     * Manos jugadas (cada cierre de apuestas cuenta, aunque alguien no apueste).
+     */
+    played: number;
+    /**
+     * Por pila, de mayor a menor (vacío antes del primer torneo).
+     */
+    standings: TournamentStanding[];
+    winner?: RoomPlayer;
+}
 
 /**
  * El turno del dealer se resuelve dentro de la misma respuesta: no hay fase visible
@@ -156,7 +173,7 @@ export interface RoundView {
  * Logros. Las condiciones están en «Front — Fase 5 Logros.md»; los textos los pone el
  * front.
  */
-export type AchievementId = "firstWin" | "blackjack" | "perfectSplit" | "optimal10" | "optimal50" | "sixToFiveSurvivor" | "doubleUp" | "rankedQualified" | "rankedMedal" | "dailyComplete";
+export type AchievementId = "firstWin" | "blackjack" | "perfectSplit" | "optimal10" | "optimal50" | "sixToFiveSurvivor" | "doubleUp" | "rankedQualified" | "rankedMedal" | "dailyComplete" | "tournamentWin";
 
 /**
  * Medalla de fin de temporada (solo con el mínimo de manos).
@@ -166,7 +183,7 @@ export type Medal = "gold" | "silver" | "bronze" | "top10";
 /**
  * Mensajes del cliente por el WebSocket de la sala.
  */
-export type ClientMessage = { type: "sit"; seat: number } | { type: "leaveSeat" } | { type: "bet"; amount: number } | { type: "action"; action: Action } | { type: "rebuy" } | { type: "insurance"; take: boolean } | { type: "react"; reaction: Reaction } | { type: "kick"; playerId: string };
+export type ClientMessage = { type: "sit"; seat: number } | { type: "leaveSeat" } | { type: "bet"; amount: number } | { type: "action"; action: Action } | { type: "rebuy" } | { type: "insurance"; take: boolean } | { type: "react"; reaction: Reaction } | { type: "kick"; playerId: string } | { type: "startTournament" };
 
 /**
  * Mensajes del servidor por el WebSocket de la sala.
@@ -266,7 +283,11 @@ export interface RoomState {
      * Fracción del zapato ya repartida.
      */
     penetration: number;
+    /**
+     * Ranking interno (vacío en las salas de torneo: ahí manda `tournament`).
+     */
     leaderboard: RoomLeaderboardRow[];
+    tournament?: TournamentView;
 }
 
 /**
@@ -396,6 +417,7 @@ export interface RoomInfo {
     rules: Rules;
     preset?: Preset;
     aids: boolean;
+    tournament?: TournamentSettings;
     createdAt: string;
 }
 
@@ -701,6 +723,10 @@ export interface CreateRoomRequest {
      * Con ayudas, el estado trae `shoeCounts` para calcular EV en el navegador.
      */
     aids: boolean;
+    /**
+     * Sala de torneo: solo se juegan torneos de N manos que inicia el anfitrión.
+     */
+    tournament?: TournamentSettings;
 }
 
 export interface ActionResult {
@@ -1069,6 +1095,26 @@ export interface Rules {
     penetration: number;
 }
 
+export interface TournamentSettings {
+    /**
+     * Manos del torneo (5–30).
+     */
+    hands: number;
+}
+
+export interface TournamentStanding {
+    /**
+     * Desde 1; empates comparten posición.
+     */
+    rank: number;
+    player: RoomPlayer;
+    stack: number;
+    /**
+     * Sin fichas para la apuesta mínima o se levantó: ya no juega.
+     */
+    out: boolean;
+}
+
 export interface UnlockedAchievement {
     id: AchievementId;
     /**
@@ -1112,3 +1158,5 @@ export type SpotKind = "hard" | "soft" | "pair";
 export type Suit = "S" | "H" | "D" | "C";
 
 export type Surrender = "none" | "late";
+
+export type TournamentStatus = "waiting" | "running" | "finished";

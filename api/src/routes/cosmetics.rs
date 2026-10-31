@@ -21,7 +21,7 @@ use CosmeticId as C;
 use CosmeticSlot as S;
 
 /// El catálogo: cada cosmético, su lugar y el logro que lo desbloquea (`None`: de serie).
-pub const CATALOG: [(CosmeticId, CosmeticSlot, Option<AchievementId>); 14] = [
+pub const CATALOG: [(CosmeticId, CosmeticSlot, Option<AchievementId>); 15] = [
     (C::FeltGreen, S::Felt, None),
     (C::FeltBlue, S::Felt, Some(A::DailyComplete)),
     (C::FeltRed, S::Felt, Some(A::DoubleUp)),
@@ -36,6 +36,7 @@ pub const CATALOG: [(CosmeticId, CosmeticSlot, Option<AchievementId>); 14] = [
     (C::TitleCoolHead, S::Title, Some(A::Optimal10)),
     (C::TitleByTheBook, S::Title, Some(A::Optimal50)),
     (C::TitleMedalist, S::Title, Some(A::RankedMedal)),
+    (C::TitleChampion, S::Title, Some(A::TournamentWin)),
 ];
 
 /// Lo que tiene puesto quien nunca eligió.

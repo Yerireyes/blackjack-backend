@@ -59,11 +59,12 @@ struct Server {
 /// Levanta la API en un puerto libre; las salas reparten de un zapato con `top` arriba.
 async fn server(pool: PgPool, rooms: RoomsConfig, top: &[Face]) -> Server {
     let cfg = config();
-    let mut state = AppState::new(pool, &cfg);
+    let mut state = AppState::new(pool.clone(), &cfg);
     let top: Arc<Vec<Face>> = Arc::new(top.to_vec());
     state.rooms = Arc::new(Rooms::with_shoe(
         rooms,
         Arc::new(move |decks| GameShoe::stacked(decks, &top)),
+        Some(pool),
     ));
     let router = app(state, &cfg, &RateLimits::new(&cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -821,4 +822,125 @@ async fn friends_invitations_and_daily_among_friends(pool: PgPool) {
         .request("GET", "/daily/leaderboard?scope=todos", Some(&ana), None)
         .await;
     assert_eq!(st, 400);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn room_tournament(pool: PgPool) {
+    use Face::*;
+    // Asiento 1 (Ana): 10,9; asiento 2 (Beto): 10,7; dealer 9 + 7 pide un 2 → 18.
+    let rooms = RoomsConfig {
+        bet_time: Duration::from_millis(200),
+        ..fast()
+    };
+    let s = server(
+        pool.clone(),
+        rooms,
+        &[Ten, Ten, Nine, Nine, Seven, Seven, Two],
+    )
+    .await;
+    let ana = s.register("ana").await;
+    let beto = s.register("beto").await;
+    let carla = s.register("carla").await;
+    let body = |hands: u8| {
+        json!({ "name": "Torneo", "visibility": "public", "seats": 5, "preset": "vegas",
+                "aids": false, "tournament": { "hands": hands } })
+    };
+    let (st, _) = s.create(&ana, body(4)).await;
+    assert_eq!(st, 400, "de 5 a 30 manos");
+    let (st, info) = s.create(&ana, body(5)).await;
+    assert_eq!((st, &info["tournament"]), (201, &json!({ "hands": 5 })));
+    let code = info["code"].as_str().unwrap();
+
+    let (mut a, _) = s.connect(code, &ana).await;
+    let (mut b, _) = s.connect(code, &beto).await;
+    send(&mut a, json!({ "type": "sit", "seat": 1 })).await;
+    send(&mut a, json!({ "type": "startTournament" })).await;
+    assert_eq!(error(&mut a).await, "not_enough_players");
+    send(&mut b, json!({ "type": "sit", "seat": 2 })).await;
+    let state = until(&mut a, |m| {
+        m["type"] == "state" && m["room"]["seats"][1]["player"].is_object()
+    })
+    .await;
+    // Sentarse no abre apuestas: la sala espera al torneo.
+    assert_eq!(state["room"]["phase"], "waiting");
+    assert_eq!(state["room"]["tournament"]["status"], "waiting");
+    send(&mut b, json!({ "type": "startTournament" })).await;
+    assert_eq!(error(&mut b).await, "not_host");
+
+    send(&mut a, json!({ "type": "startTournament" })).await;
+    let state = phase(&mut a, "betting").await;
+    assert_eq!(state["tournament"]["status"], "running");
+    assert_eq!(
+        state["leaderboard"],
+        json!([]),
+        "en torneo manda la clasificación"
+    );
+    let (mut c, _) = s.connect(code, &carla).await;
+    send(&mut c, json!({ "type": "sit", "seat": 3 })).await;
+    assert_eq!(error(&mut c).await, "tournament_running");
+
+    send(&mut a, json!({ "type": "bet", "amount": 100 })).await;
+    send(&mut b, json!({ "type": "bet", "amount": 100 })).await;
+    phase(&mut a, "playing").await;
+    send(&mut a, json!({ "type": "action", "action": "stand" })).await;
+    until(&mut b, |m| {
+        m["type"] == "state" && m["room"]["round"]["turn"] == 2
+    })
+    .await;
+    send(&mut b, json!({ "type": "action", "action": "stand" })).await;
+    let state = phase(&mut a, "results").await;
+    assert_eq!(
+        (&state["seats"][0]["stack"], &state["seats"][1]["stack"]),
+        (&json!(600), &json!(400))
+    );
+
+    // Las otras 4 manos pasan sin apuestas y el torneo termina.
+    let state = until(&mut a, |m| {
+        m["type"] == "state" && m["room"]["tournament"]["status"] == "finished"
+    })
+    .await["room"]
+        .clone();
+    let t = &state["tournament"];
+    assert_eq!(t["played"], 5);
+    assert_eq!(t["winner"]["displayName"], "ana");
+    assert_eq!(
+        t["standings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (
+                r["player"]["displayName"].clone(),
+                r["stack"].clone(),
+                r["rank"].clone()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (json!("ana"), json!(600), json!(1)),
+            (json!("beto"), json!(400), json!(2))
+        ]
+    );
+    assert_eq!(state["phase"], "waiting");
+    send(&mut a, json!({ "type": "rebuy" })).await;
+    assert_eq!(error(&mut a).await, "tournament_no_rebuy");
+
+    // Logro y título del ganador.
+    let mut owned = Value::Null;
+    for _ in 0..20 {
+        let (_, mine) = s.request("GET", "/me/cosmetics", Some(&ana), None).await;
+        owned = mine["owned"].clone();
+        if owned.as_array().unwrap().contains(&json!("titleChampion")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        owned.as_array().unwrap().contains(&json!("titleChampion")),
+        "{owned}"
+    );
+    let (_, mine) = s.request("GET", "/me/achievements", Some(&ana), None).await;
+    assert!(mine["unlocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|u| u["id"] == "tournamentWin"));
 }

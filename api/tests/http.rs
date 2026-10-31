@@ -2239,7 +2239,7 @@ async fn cosmetics_follow_achievements(pool: PgPool) {
     let res = send(&app, "GET", "/api/v1/cosmetics", None, None).await;
     assert_eq!(res.status, StatusCode::OK);
     let catalog = res.body.as_array().unwrap();
-    assert_eq!(catalog.len(), 14);
+    assert_eq!(catalog.len(), 15);
     assert_eq!(catalog[0], json!({ "id": "feltGreen", "slot": "felt" }));
     assert!(catalog
         .iter()

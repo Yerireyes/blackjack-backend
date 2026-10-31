@@ -20,6 +20,7 @@ use engine::game::{
 };
 use futures_util::{SinkExt, StreamExt};
 use rand::RngExt;
+use sqlx::PgPool;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -89,6 +90,8 @@ pub struct Rooms {
     pub cfg: RoomsConfig,
     shoe: ShoeFactory,
     next_conn: AtomicU64,
+    /// Para otorgar el logro del ganador de un torneo (lo único que una sala escribe).
+    pool: Option<PgPool>,
 }
 
 /// Sin letras ni números que se confundan (0/O, 1/I/L).
@@ -102,16 +105,17 @@ fn new_code() -> String {
 }
 
 impl Rooms {
-    pub fn new(cfg: RoomsConfig) -> Rooms {
-        Rooms::with_shoe(cfg, Arc::new(shuffled_shoe))
+    pub fn new(cfg: RoomsConfig, pool: Option<PgPool>) -> Rooms {
+        Rooms::with_shoe(cfg, Arc::new(shuffled_shoe), pool)
     }
 
-    pub fn with_shoe(cfg: RoomsConfig, shoe: ShoeFactory) -> Rooms {
+    pub fn with_shoe(cfg: RoomsConfig, shoe: ShoeFactory, pool: Option<PgPool>) -> Rooms {
         Rooms {
             map: Arc::new(Mutex::new(HashMap::new())),
             cfg,
             shoe,
             next_conn: AtomicU64::new(1),
+            pool,
         }
     }
 
@@ -159,6 +163,7 @@ impl Rooms {
             self.cfg.clone(),
             self.shoe.clone(),
             summary.clone(),
+            self.pool.clone(),
         );
         map.insert(code.clone(), Handle { tx, summary });
         let registry = self.map.clone();
@@ -284,6 +289,9 @@ pub async fn create(
     if !(5..=7).contains(&req.seats) {
         return Err(ApiError::bad_request("la mesa tiene 5, 6 o 7 asientos"));
     }
+    if req.tournament.is_some_and(|t| !(5..=30).contains(&t.hands)) {
+        return Err(ApiError::bad_request("un torneo tiene de 5 a 30 manos"));
+    }
     let (rules, preset) = match (req.preset, req.rules) {
         (Some(p), None) => (p.rules(), Some(p)),
         (None, Some(r)) => (r, None),
@@ -307,6 +315,7 @@ pub async fn create(
         rules,
         preset,
         aids: req.aids,
+        tournament: req.tournament,
         created_at: rfc3339(now_micros()),
     };
     let info = state.rooms.create(info, user.id)?;

@@ -1,16 +1,18 @@
 //! El actor de una sala: una tarea de Tokio dueña de todo su estado (asientos, pilas,
-//! zapato, ronda, temporizadores y ranking interno). Recibe órdenes por un canal y manda
-//! el estado completo a cada conexión cada vez que cambia algo. Nada se guarda en la
-//! base: el ranking interno muere con la sala.
+//! zapato, ronda, temporizadores, ranking interno y torneo). Recibe órdenes por un canal
+//! y manda el estado completo a cada conexión cada vez que cambia algo. Nada se guarda en
+//! la base salvo el logro del ganador de un torneo: el ranking interno muere con la sala.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use engine::game::{
     ClientMessage, CosmeticId, GameError, GameShoe, RoomInfo, RoomLeaderboardRow, RoomPhase,
-    RoomPlayer, RoomSeat, RoomState, RoundPhase, ServerMessage, TableRound,
+    RoomPlayer, RoomSeat, RoomState, RoundPhase, ServerMessage, TableRound, TournamentStanding,
+    TournamentStatus, TournamentView,
 };
 use engine::{Action, Rules};
+use sqlx::PgPool;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{sleep_until, Instant};
 use uuid::Uuid;
@@ -103,6 +105,16 @@ enum Phase {
     },
 }
 
+/// El torneo de una sala de torneo: pilas propias de 500 para los que estaban sentados al
+/// empezar, sin recompras, durante `hands` manos.
+struct Tournament {
+    hands: u32,
+    played: u32,
+    status: TournamentStatus,
+    stacks: HashMap<Uuid, i64>,
+    winner: Option<Uuid>,
+}
+
 pub struct Room {
     code: String,
     info: RoomInfo,
@@ -116,6 +128,10 @@ pub struct Room {
     wallets: HashMap<Uuid, Wallet>,
     banned: HashSet<Uuid>,
     phase: Phase,
+    /// Solo en las salas de torneo.
+    tournament: Option<Tournament>,
+    /// Para el logro del ganador de un torneo.
+    pool: Option<PgPool>,
     /// Desde cuándo no hay nadie conectado.
     empty_since: Option<Instant>,
     summary: Arc<RwLock<Summary>>,
@@ -159,11 +175,20 @@ impl Room {
         cfg: RoomsConfig,
         shoe_factory: ShoeFactory,
         summary: Arc<RwLock<Summary>>,
+        pool: Option<PgPool>,
     ) -> Room {
         let rules = info.rules.clone();
         Room {
             shoe: shoe_factory(rules.decks),
             seats: vec![Seat::default(); info.seats as usize],
+            tournament: info.tournament.map(|t| Tournament {
+                hands: t.hands as u32,
+                played: 0,
+                status: TournamentStatus::Waiting,
+                stacks: HashMap::new(),
+                winner: None,
+            }),
+            pool,
             code,
             info,
             rules,
@@ -399,7 +424,11 @@ impl Room {
                     .ok_or_else(|| error("not_seated", "no estás sentado"))?;
                 self.insure(i as u8 + 1, take)
             }
+            ClientMessage::StartTournament => self.start_tournament(user),
             ClientMessage::Rebuy => {
+                if self.tournament.is_some() {
+                    return Err(error("tournament_no_rebuy", "en un torneo no se recompra"));
+                }
                 let i = self.seat_index_of(user);
                 if i.is_some_and(|i| self.in_round(i)) {
                     return Err(error("round_in_progress", "espera a que termine la ronda"));
@@ -479,6 +508,12 @@ impl Room {
         if self.seats[i].user.is_some() {
             return Err(error("seat_taken", "ese asiento está ocupado"));
         }
+        if self.tournament_running() {
+            return Err(error(
+                "tournament_running",
+                "el torneo ya empezó: espera al siguiente",
+            ));
+        }
         let player = self
             .members
             .get(&user)
@@ -496,18 +531,151 @@ impl Room {
             missed: 0,
             leaving: false,
         };
-        if matches!(self.phase, Phase::Waiting) {
+        // En una sala de torneo solo se juega con el torneo en marcha.
+        if matches!(self.phase, Phase::Waiting) && self.tournament.is_none() {
             self.start_betting();
         }
         self.dirty = true;
         Ok(())
     }
 
+    // ---- Torneos ----
+
+    fn tournament_running(&self) -> bool {
+        self.tournament
+            .as_ref()
+            .is_some_and(|t| t.status == TournamentStatus::Running)
+    }
+
+    /// La pila con la que juega el usuario: la del torneo en una sala de torneo (500
+    /// mientras no empezó) o la suya de la sala.
+    fn stack(&self, user: Uuid) -> i64 {
+        match &self.tournament {
+            Some(t) => t.stacks.get(&user).copied().unwrap_or(STACK),
+            None => self.wallets.get(&user).map_or(0, |w| w.stack),
+        }
+    }
+
+    fn stack_mut(&mut self, user: Uuid) -> Option<&mut i64> {
+        match &mut self.tournament {
+            Some(t) => t.stacks.get_mut(&user),
+            None => self.wallets.get_mut(&user).map(|w| &mut w.stack),
+        }
+    }
+
+    /// El anfitrión inicia un torneo con los que están sentados (2 o más).
+    fn start_tournament(&mut self, user: Uuid) -> Result<(), Reject> {
+        if user != self.host {
+            return Err(error("not_host", "solo el anfitrión inicia el torneo"));
+        }
+        let seated: Vec<Uuid> = self.seats.iter().filter_map(|s| s.user).collect();
+        let Some(t) = &mut self.tournament else {
+            return Err(error("not_a_tournament", "esta sala no es de torneo"));
+        };
+        if t.status == TournamentStatus::Running {
+            return Err(error("tournament_running", "el torneo ya está en marcha"));
+        }
+        if seated.len() < 2 {
+            return Err(error(
+                "not_enough_players",
+                "hacen falta al menos 2 jugadores sentados",
+            ));
+        }
+        t.status = TournamentStatus::Running;
+        t.played = 0;
+        t.winner = None;
+        t.stacks = seated.into_iter().map(|u| (u, STACK)).collect();
+        for s in &mut self.seats {
+            s.missed = 0;
+        }
+        self.start_betting();
+        Ok(())
+    }
+
+    /// Termina si se jugaron todas las manos o queda uno solo (o nadie) con fichas
+    /// sentado. Gana la pila más alta; el ganador recibe el logro `tournamentWin`.
+    fn maybe_finish_tournament(&mut self) {
+        let seated: HashSet<Uuid> = self.seats.iter().filter_map(|s| s.user).collect();
+        let Some(t) = &mut self.tournament else {
+            return;
+        };
+        if t.status != TournamentStatus::Running {
+            return;
+        }
+        let alive = t
+            .stacks
+            .iter()
+            .filter(|(u, &s)| s >= MIN_BET && seated.contains(u))
+            .count();
+        if t.played < t.hands && alive >= 2 {
+            return;
+        }
+        t.status = TournamentStatus::Finished;
+        let wallets = &self.wallets;
+        let name = |u: &Uuid| wallets.get(u).map(|w| w.player.display_name.clone());
+        t.winner = t
+            .stacks
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then_with(|| name(b.0).cmp(&name(a.0))))
+            .map(|(u, _)| *u);
+        if let (Some(winner), Some(pool)) = (t.winner, self.pool.clone()) {
+            tokio::spawn(async move {
+                let res = sqlx::query!(
+                    "INSERT INTO user_achievements (user_id, achievement)
+                     VALUES ($1, 'tournamentWin') ON CONFLICT DO NOTHING",
+                    winner
+                )
+                .execute(&pool)
+                .await;
+                if let Err(e) = res {
+                    tracing::warn!("no se pudo otorgar el logro del torneo: {e}");
+                }
+            });
+        }
+        self.dirty = true;
+    }
+
+    fn tournament_view(&self) -> Option<TournamentView> {
+        let t = self.tournament.as_ref()?;
+        let seated: HashSet<Uuid> = self.seats.iter().filter_map(|s| s.user).collect();
+        let player = |u: &Uuid| {
+            self.wallets
+                .get(u)
+                .map(|w| w.player.clone())
+                .unwrap_or_else(|| RoomPlayer {
+                    id: u.to_string(),
+                    display_name: String::new(),
+                    title: None,
+                })
+        };
+        let mut rows: Vec<(Uuid, i64)> = t.stacks.iter().map(|(u, s)| (*u, *s)).collect();
+        rows.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| player(&a.0).display_name.cmp(&player(&b.0).display_name))
+        });
+        let standings = rows
+            .iter()
+            .map(|(u, stack)| TournamentStanding {
+                rank: 1 + rows.iter().filter(|(_, s)| s > stack).count() as u32,
+                player: player(u),
+                stack: *stack,
+                out: *stack < MIN_BET || !seated.contains(u),
+            })
+            .collect();
+        Some(TournamentView {
+            status: t.status,
+            hands: t.hands,
+            played: t.played,
+            standings,
+            winner: t.winner.map(|u| player(&u)),
+        })
+    }
+
     fn bet(&mut self, user: Uuid, amount: i64) -> Result<(), Reject> {
         let i = self
             .seat_index_of(user)
             .ok_or_else(|| error("not_seated", "no estás sentado"))?;
-        let stack = self.wallets.get(&user).map_or(0, |w| w.stack);
+        let stack = self.stack(user);
         let Phase::Betting { bets, .. } = &mut self.phase else {
             return Err(error("betting_closed", "ahora no se puede apostar"));
         };
@@ -552,9 +720,17 @@ impl Room {
         let Phase::Betting { bets, .. } = std::mem::replace(&mut self.phase, Phase::Waiting) else {
             return;
         };
-        // Quien no apostó suma una ronda perdida; a las 3 vuelve a espectador.
+        // En un torneo cada cierre de apuestas es una mano jugada (así siempre termina);
+        // quien no apuesta solo se la pierde.
+        if let Some(t) = self.tournament.as_mut() {
+            if t.status == TournamentStatus::Running {
+                t.played += 1;
+            }
+        }
+        // Quien no apostó suma una ronda perdida; a las 3 vuelve a espectador (no en las
+        // salas de torneo).
         for i in 0..self.seats.len() {
-            if self.seats[i].user.is_none() {
+            if self.seats[i].user.is_none() || self.tournament.is_some() {
                 continue;
             }
             if bets.contains_key(&(i as u8 + 1)) {
@@ -631,15 +807,14 @@ impl Room {
     /// El asiento `seat` toma o rechaza el seguro. Mientras falten decisiones el tiempo
     /// del seguro no se reinicia; cuando decidieron todos, sigue la ronda.
     fn insure(&mut self, seat: u8, take: bool) -> Result<(), Reject> {
+        let stack = self.seats[seat as usize - 1].user.map(|u| self.stack(u));
         let Phase::Playing { round, .. } = &mut self.phase else {
             return Err(error("action_not_allowed", "ahora no se ofrece el seguro"));
         };
         // Fichas de la pila fuera de la apuesta (en el seguro todavía no hay dobles).
-        let free = self.seats[seat as usize - 1]
-            .user
-            .and_then(|u| self.wallets.get(&u))
+        let free = stack
             .zip(round.seats.iter().find(|s| s.seat == seat))
-            .map_or(0, |(w, s)| w.stack - s.bet);
+            .map_or(0, |(stack, s)| stack - s.bet);
         match round.insure(seat, take, free, &mut self.shoe, &self.rules) {
             Ok(()) if round.phase == RoundPhase::Insurance => {
                 self.dirty = true;
@@ -670,15 +845,14 @@ impl Room {
 
     /// Una acción del asiento `seat` (1..), que tiene que estar en turno.
     fn play(&mut self, seat: u8, action: Action) -> Result<(), Reject> {
+        let stack = self.seats[seat as usize - 1].user.map(|u| self.stack(u));
         let Phase::Playing { round, .. } = &mut self.phase else {
             return Err(error("not_your_turn", "no es tu turno"));
         };
-        let spare = self.seats[seat as usize - 1]
-            .user
-            .and_then(|u| self.wallets.get(&u))
+        let spare = stack
             .zip(round.seats.iter().find(|s| s.seat == seat))
-            .map_or(0, |(w, s)| {
-                spare_units(w.stack - s.insurance_chips(), s.bet, s.staked_units())
+            .map_or(0, |(stack, s)| {
+                spare_units(stack - s.insurance_chips(), s.bet, s.staked_units())
             });
         match round.act(seat, action, &mut self.shoe, &self.rules, spare) {
             Ok(()) => {
@@ -704,9 +878,14 @@ impl Room {
 
     fn settle(&mut self, round: TableRound) {
         for s in &round.seats {
-            let user = self.seats[s.seat as usize - 1].user;
-            if let Some(w) = user.and_then(|u| self.wallets.get_mut(&u)) {
-                w.stack = (w.stack + s.net_chips(&round.dealer)).max(0);
+            let Some(user) = self.seats[s.seat as usize - 1].user else {
+                continue;
+            };
+            let net = s.net_chips(&round.dealer);
+            if let Some(stack) = self.stack_mut(user) {
+                *stack = (*stack + net).max(0);
+            }
+            if let Some(w) = self.wallets.get_mut(&user) {
                 w.hands += 1;
             }
         }
@@ -732,7 +911,9 @@ impl Room {
                 self.free_seat(i);
             }
         }
-        if self.seats.iter().any(|s| s.user.is_some()) {
+        self.maybe_finish_tournament();
+        let playing = self.tournament.is_none() || self.tournament_running();
+        if playing && self.seats.iter().any(|s| s.user.is_some()) {
             self.start_betting();
         } else {
             self.phase = Phase::Waiting;
@@ -894,7 +1075,7 @@ impl Room {
                 RoomSeat {
                     seat: i as u8 + 1,
                     player: wallet.map(|w| w.player.clone()),
-                    stack: wallet.map_or(0, |w| w.stack),
+                    stack: s.user.map_or(0, |u| self.stack(u)),
                     connected: s.user.is_some_and(|u| self.connected(u)),
                     bet: bets.and_then(|b| b.get(&(i as u8 + 1)).copied()),
                 }
@@ -912,12 +1093,10 @@ impl Room {
             let spare = r
                 .turn_seat()
                 .and_then(|seat| {
-                    let w = self.seats[seat as usize - 1]
-                        .user
-                        .and_then(|u| self.wallets.get(&u))?;
+                    let stack = self.seats[seat as usize - 1].user.map(|u| self.stack(u))?;
                     let s = r.seats.iter().find(|s| s.seat == seat)?;
                     Some(spare_units(
-                        w.stack - s.insurance_chips(),
+                        stack - s.insurance_chips(),
                         s.bet,
                         s.staked_units(),
                     ))
@@ -929,9 +1108,11 @@ impl Room {
             Some(r) => r.unseen_counts(&self.shoe),
             None => self.shoe.remaining_counts(),
         });
+        // En una sala de torneo manda la clasificación del torneo.
         let mut leaderboard: Vec<RoomLeaderboardRow> = self
             .wallets
             .values()
+            .filter(|_| self.tournament.is_none())
             .map(|w| RoomLeaderboardRow {
                 player: w.player.clone(),
                 net: w.stack - STACK * w.buy_ins as i64,
@@ -959,6 +1140,7 @@ impl Room {
             shoe_counts,
             penetration: self.shoe.dealt_fraction(),
             leaderboard,
+            tournament: self.tournament_view(),
         }
     }
 }

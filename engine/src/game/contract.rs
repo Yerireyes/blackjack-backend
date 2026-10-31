@@ -272,10 +272,12 @@ pub enum AchievementId {
     RankedMedal,
     /// Jugar las 30 manos del reto diario.
     DailyComplete,
+    /// Ganar un torneo en una sala.
+    TournamentWin,
 }
 
 impl AchievementId {
-    pub const ALL: [AchievementId; 10] = [
+    pub const ALL: [AchievementId; 11] = [
         AchievementId::FirstWin,
         AchievementId::Blackjack,
         AchievementId::PerfectSplit,
@@ -286,6 +288,7 @@ impl AchievementId {
         AchievementId::RankedQualified,
         AchievementId::RankedMedal,
         AchievementId::DailyComplete,
+        AchievementId::TournamentWin,
     ];
 
     /// Nombre estable (el mismo del JSON), para guardarlo en la base.
@@ -301,6 +304,7 @@ impl AchievementId {
             AchievementId::RankedQualified => "rankedQualified",
             AchievementId::RankedMedal => "rankedMedal",
             AchievementId::DailyComplete => "dailyComplete",
+            AchievementId::TournamentWin => "tournamentWin",
         }
     }
 
@@ -780,6 +784,7 @@ pub enum CosmeticId {
     TitleCoolHead,
     TitleByTheBook,
     TitleMedalist,
+    TitleChampion,
 }
 
 /// Un cosmético del catálogo.
@@ -848,6 +853,57 @@ pub struct CreateRoomRequest {
     pub rules: Option<Rules>,
     /// Con ayudas, el estado trae `shoeCounts` para calcular EV en el navegador.
     pub aids: bool,
+    /// Sala de torneo: solo se juegan torneos de N manos que inicia el anfitrión.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub tournament: Option<TournamentSettings>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct TournamentSettings {
+    /// Manos del torneo (5–30).
+    pub hands: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum TournamentStatus {
+    /// Esperando que el anfitrión lo inicie (con 2 o más sentados).
+    Waiting,
+    Running,
+    /// Terminó; el anfitrión puede iniciar otro.
+    Finished,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct TournamentStanding {
+    /// Desde 1; empates comparten posición.
+    pub rank: u32,
+    pub player: RoomPlayer,
+    pub stack: i64,
+    /// Sin fichas para la apuesta mínima o se levantó: ya no juega.
+    pub out: bool,
+}
+
+/// El torneo de la sala.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct TournamentView {
+    pub status: TournamentStatus,
+    pub hands: u32,
+    /// Manos jugadas (cada cierre de apuestas cuenta, aunque alguien no apueste).
+    pub played: u32,
+    /// Por pila, de mayor a menor (vacío antes del primer torneo).
+    pub standings: Vec<TournamentStanding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub winner: Option<RoomPlayer>,
 }
 
 /// Una sala, para el lobby y la invitación.
@@ -873,6 +929,9 @@ pub struct RoomInfo {
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub preset: Option<Preset>,
     pub aids: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub tournament: Option<TournamentSettings>,
     pub created_at: String,
 }
 
@@ -974,7 +1033,11 @@ pub struct RoomState {
     pub shoe_counts: Option<[u16; 10]>,
     /// Fracción del zapato ya repartida.
     pub penetration: f64,
+    /// Ranking interno (vacío en las salas de torneo: ahí manda `tournament`).
     pub leaderboard: Vec<RoomLeaderboardRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub tournament: Option<TournamentView>,
 }
 
 /// Mensajes del cliente por el WebSocket de la sala.
@@ -1011,6 +1074,8 @@ pub enum ClientMessage {
     Kick {
         player_id: String,
     },
+    /// Solo el anfitrión, en una sala de torneo: inicia un torneo con los sentados.
+    StartTournament,
 }
 
 /// Mensajes del servidor por el WebSocket de la sala.

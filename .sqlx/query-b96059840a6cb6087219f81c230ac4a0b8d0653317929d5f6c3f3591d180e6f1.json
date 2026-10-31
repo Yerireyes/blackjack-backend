@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO user_achievements (user_id, achievement)\n                     VALUES ($1, 'tournamentWin') ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b96059840a6cb6087219f81c230ac4a0b8d0653317929d5f6c3f3591d180e6f1"
+}
