@@ -75,6 +75,8 @@ impl RoomsConfig {
 pub struct Summary {
     pub info: RoomInfo,
     pub host: Uuid,
+    /// Usuarios con al menos una conexión abierta (para amigos e invitaciones).
+    pub members: Vec<Uuid>,
 }
 
 struct Handle {
@@ -147,6 +149,7 @@ impl Rooms {
         let summary = Arc::new(RwLock::new(Summary {
             info: info.clone(),
             host,
+            members: Vec::new(),
         }));
         let (tx, rx) = mpsc::channel(256);
         let room = Room::new(
@@ -198,6 +201,28 @@ impl Rooms {
     /// Salas abiertas ahora.
     pub fn len(&self) -> usize {
         self.lock().len()
+    }
+
+    /// La sala abierta (por código) si existe.
+    pub fn info(&self, code: &str) -> Option<RoomInfo> {
+        self.find(code).map(|(_, info)| info)
+    }
+
+    /// ¿El usuario está conectado a esa sala?
+    pub fn is_member(&self, code: &str, user: Uuid) -> bool {
+        let map = self.lock();
+        map.get(&code.to_ascii_uppercase())
+            .and_then(|h| h.summary.read().ok().map(|s| s.members.contains(&user)))
+            .unwrap_or(false)
+    }
+
+    /// Una sala pública en la que está conectado el usuario, si hay.
+    pub fn public_room_of(&self, user: Uuid) -> Option<RoomInfo> {
+        let map = self.lock();
+        map.values()
+            .filter_map(|h| h.summary.read().ok())
+            .find(|s| s.info.visibility == RoomVisibility::Public && s.members.contains(&user))
+            .map(|s| s.info.clone())
     }
 
     /// Salas abiertas, jugadores sentados y espectadores, para las métricas.

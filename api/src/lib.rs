@@ -110,8 +110,8 @@ async fn not_found() -> ApiError {
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
     use routes::{
-        achievements, analyze, auth, casual, cosmetics, daily, google, play, ranked, sessions,
-        stats,
+        achievements, analyze, auth, casual, cosmetics, daily, friends, google, play, ranked,
+        sessions, stats,
     };
 
     let analyze_routes = Router::new()
@@ -135,6 +135,11 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/casual/runs/{id}/retire", post(casual::retire))
         .route("/daily/attempts", post(daily::start))
         .route("/rooms", post(rooms::create))
+        .route("/rooms/{code}/invite", post(friends::invite))
+        .route("/friends/requests", post(friends::request))
+        .route("/friends/requests/{id}/accept", post(friends::accept))
+        .route("/friends/requests/{id}/decline", post(friends::decline))
+        .route("/friends/{id}/remove", post(friends::remove))
         .route("/play/rounds", post(play::deal))
         .route("/play/rounds/{id}/actions", post(play::act))
         .route("/play/rounds/{id}/insurance", post(play::insurance))
@@ -149,6 +154,8 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/me/records", get(casual::records))
         .route("/me/achievements", get(achievements::mine))
         .route("/me/history", get(stats::history))
+        .route("/friends", get(friends::list))
+        .route("/me/invitations/{id}/dismiss", post(friends::dismiss))
         .route("/me/stats", get(stats::stats))
         .route("/cosmetics", get(cosmetics::catalog))
         .route("/rooms", get(rooms::list))

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO friends (user_id, friend_id) VALUES ($1, $2), ($2, $1)\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "271d4d428befcab1df2f769d5ddc5182bc8ff0777a057a06aa097243958fa521"
+}

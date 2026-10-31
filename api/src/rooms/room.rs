@@ -860,6 +860,12 @@ impl Room {
         if let Ok(mut s) = self.summary.write() {
             s.info = self.info.clone();
             s.host = self.host;
+            s.members = self
+                .members
+                .iter()
+                .filter(|(_, m)| !m.conns.is_empty())
+                .map(|(u, _)| *u)
+                .collect();
         }
         let state = self.state();
         self.broadcast(&ServerMessage::State { room: state });

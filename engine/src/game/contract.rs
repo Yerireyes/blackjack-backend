@@ -1157,3 +1157,70 @@ pub struct MyStats {
     pub modes: Vec<ModeStats>,
     pub decisions: DecisionStats,
 }
+
+// ---- Amigos ----
+
+/// Un amigo, con si está conectado y en qué sala pública juega.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct FriendView {
+    /// `id` es el del usuario (sirve para invitar o quitar).
+    pub user: RoomPlayer,
+    /// Usó la app en los últimos 10 minutos o está en una sala.
+    pub online: bool,
+    /// La sala pública en la que está, si hay (las privadas solo por invitación).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub room: Option<RoomInfo>,
+    pub since: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct FriendRequestView {
+    pub user: RoomPlayer,
+    pub at: String,
+}
+
+/// Una invitación a una sala que sigue abierta (vencen a los 30 minutos).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct RoomInvitation {
+    pub id: String,
+    pub from: RoomPlayer,
+    pub room: RoomInfo,
+    pub at: String,
+}
+
+/// `GET /friends`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct FriendsView {
+    /// Conectados primero; después por nombre.
+    pub friends: Vec<FriendView>,
+    /// Solicitudes que recibió.
+    pub incoming: Vec<FriendRequestView>,
+    /// Solicitudes que mandó y siguen pendientes.
+    pub outgoing: Vec<FriendRequestView>,
+    pub invitations: Vec<RoomInvitation>,
+}
+
+/// `POST /friends/requests`: por nombre visible (sin distinguir mayúsculas).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct FriendRequest {
+    pub display_name: String,
+}
+
+/// `POST /rooms/{code}/invite`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct InviteRequest {
+    pub user_id: String,
+}

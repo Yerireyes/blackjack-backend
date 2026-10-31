@@ -629,3 +629,196 @@ async fn room_insurance_before_the_peek(pool: PgPool) {
         (&json!(-20), &json!(-20))
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn friends_invitations_and_daily_among_friends(pool: PgPool) {
+    let s = server(pool.clone(), fast(), &[]).await;
+    let ana = s.register("ana").await;
+    let beto = s.register("beto").await;
+    let carla = s.register("carla").await;
+    let req = |name: &str| json!({ "displayName": name });
+
+    // Solicitudes: por nombre sin distinguir mayúsculas.
+    let (st, _) = s
+        .request("POST", "/friends/requests", Some(&ana), Some(req("BETO")))
+        .await;
+    assert_eq!(st, 202);
+    let (st, res) = s
+        .request("POST", "/friends/requests", Some(&ana), Some(req("beto")))
+        .await;
+    assert_eq!((st, &res["code"]), (409, &json!("request_exists")));
+    let (st, res) = s
+        .request("POST", "/friends/requests", Some(&ana), Some(req("nadie")))
+        .await;
+    assert_eq!((st, &res["code"]), (404, &json!("user_not_found")));
+    let (st, _) = s
+        .request("POST", "/friends/requests", Some(&ana), Some(req("ana")))
+        .await;
+    assert_eq!(st, 400);
+    let (_, view) = s.request("GET", "/friends", Some(&beto), None).await;
+    assert_eq!(view["incoming"][0]["user"]["displayName"], "ana");
+    let ana_id = view["incoming"][0]["user"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, view) = s.request("GET", "/friends", Some(&ana), None).await;
+    assert_eq!(view["outgoing"][0]["user"]["displayName"], "beto");
+    let beto_id = view["outgoing"][0]["user"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (st, _) = s
+        .request(
+            "POST",
+            &format!("/friends/requests/{ana_id}/accept"),
+            Some(&beto),
+            None,
+        )
+        .await;
+    assert_eq!(st, 204);
+    let (_, view) = s.request("GET", "/friends", Some(&ana), None).await;
+    assert_eq!(view["friends"][0]["user"]["displayName"], "beto");
+    assert_eq!(
+        view["friends"][0]["online"], true,
+        "acaba de iniciar sesión"
+    );
+    assert_eq!(view["outgoing"], json!([]));
+    let (st, res) = s
+        .request("POST", "/friends/requests", Some(&beto), Some(req("ana")))
+        .await;
+    assert_eq!((st, &res["code"]), (409, &json!("already_friends")));
+
+    // Si los dos se piden, quedan como amigos; después Ana la quita.
+    s.request("POST", "/friends/requests", Some(&carla), Some(req("ana")))
+        .await;
+    let (st, _) = s
+        .request("POST", "/friends/requests", Some(&ana), Some(req("carla")))
+        .await;
+    assert_eq!(st, 201);
+    let (_, view) = s.request("GET", "/friends", Some(&carla), None).await;
+    let carla_id = {
+        let (_, mine) = s.request("GET", "/friends", Some(&ana), None).await;
+        mine["friends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["user"]["displayName"] == "carla")
+            .unwrap()["user"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(view["friends"][0]["user"]["displayName"], "ana");
+    let (st, _) = s
+        .request(
+            "POST",
+            &format!("/friends/{carla_id}/remove"),
+            Some(&ana),
+            None,
+        )
+        .await;
+    assert_eq!(st, 204);
+    let (st, _) = s
+        .request(
+            "POST",
+            &format!("/friends/{carla_id}/remove"),
+            Some(&ana),
+            None,
+        )
+        .await;
+    assert_eq!(st, 404);
+
+    // La sala pública de Ana se ve en sus amigos; invitar exige estar en la sala.
+    let code = s.room(&ana, false).await;
+    let invite = |to: &str| json!({ "userId": to });
+    let (st, res) = s
+        .request(
+            "POST",
+            &format!("/rooms/{code}/invite"),
+            Some(&ana),
+            Some(invite(&beto_id)),
+        )
+        .await;
+    assert_eq!((st, &res["code"]), (409, &json!("not_in_room")));
+    let (mut a, _) = s.connect(&code, &ana).await;
+    phase(&mut a, "waiting").await;
+    let (_, view) = s.request("GET", "/friends", Some(&beto), None).await;
+    assert_eq!(view["friends"][0]["room"]["code"], code.as_str());
+    let (st, _) = s
+        .request(
+            "POST",
+            &format!("/rooms/{code}/invite"),
+            Some(&ana),
+            Some(invite(&beto_id)),
+        )
+        .await;
+    assert_eq!(st, 204);
+    let (st, res) = s
+        .request(
+            "POST",
+            &format!("/rooms/{code}/invite"),
+            Some(&ana),
+            Some(invite(&carla_id)),
+        )
+        .await;
+    assert_eq!((st, &res["code"]), (403, &json!("not_friends")));
+    let (_, view) = s.request("GET", "/friends", Some(&beto), None).await;
+    let inv = &view["invitations"][0];
+    assert_eq!(
+        (&inv["from"]["displayName"], &inv["room"]["code"]),
+        (&json!("ana"), &json!(code))
+    );
+    let id = inv["id"].as_str().unwrap();
+    s.request(
+        "POST",
+        &format!("/me/invitations/{id}/dismiss"),
+        Some(&beto),
+        None,
+    )
+    .await;
+    let (_, view) = s.request("GET", "/friends", Some(&beto), None).await;
+    assert_eq!(view["invitations"], json!([]));
+
+    // Reto diario entre amigos: Carla ya no es amiga de Ana y no aparece.
+    for c in [&ana, &beto, &carla] {
+        s.request("POST", "/daily/attempts", Some(c), None).await;
+    }
+    for (name, balance) in [("ana", 900), ("beto", 700), ("carla", 2000)] {
+        sqlx::query(
+            "UPDATE daily_attempts d SET balance = $2, hands = 30, status = 'finished'
+             FROM users u WHERE u.id = d.user_id AND u.display_name = $1",
+        )
+        .bind(name)
+        .bind(balance)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let (_, board) = s
+        .request("GET", "/daily/leaderboard?scope=friends", Some(&ana), None)
+        .await;
+    let names: Vec<_> = board["top"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["displayName"].clone())
+        .collect();
+    assert_eq!(names, [json!("ana"), json!("beto")]);
+    assert_eq!(
+        board["me"]["rank"], 1,
+        "primera entre sus amigos (Carla tiene más)"
+    );
+    let (_, board) = s
+        .request("GET", "/daily/leaderboard", Some(&ana), None)
+        .await;
+    assert_eq!(board["me"]["rank"], 2);
+    let (st, _) = s
+        .request("GET", "/daily/leaderboard?scope=friends", None, None)
+        .await;
+    assert_eq!(st, 401);
+    let (st, _) = s
+        .request("GET", "/daily/leaderboard?scope=todos", Some(&ana), None)
+        .await;
+    assert_eq!(st, 400);
+}

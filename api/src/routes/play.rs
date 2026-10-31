@@ -703,4 +703,7 @@ pub async fn housekeeping(pool: &PgPool) {
         Ok(n) => tracing::info!("temporadas ranked cerradas: {n}"),
         Err(e) => tracing::warn!("no se pudieron cerrar las temporadas: {e}"),
     }
+    if let Err(e) = crate::routes::friends::purge_invites(pool).await {
+        tracing::warn!("no se pudieron borrar las invitaciones vencidas: {e}");
+    }
 }

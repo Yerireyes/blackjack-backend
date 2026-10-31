@@ -270,6 +270,25 @@ export interface RoomState {
 }
 
 /**
+ * Un amigo, con si está conectado y en qué sala pública juega.
+ */
+export interface FriendView {
+    /**
+     * `id` es el del usuario (sirve para invitar o quitar).
+     */
+    user: RoomPlayer;
+    /**
+     * Usó la app en los últimos 10 minutos o está en una sala.
+     */
+    online: boolean;
+    /**
+     * La sala pública en la que está, si hay (las privadas solo por invitación).
+     */
+    room?: RoomInfo;
+    since: string;
+}
+
+/**
  * Un asiento en la ronda de una sala.
  */
 export interface SeatRoundView {
@@ -307,6 +326,16 @@ export interface CosmeticItem {
      * El logro que lo desbloquea; falta en los que vienen de serie.
      */
     unlockedBy?: AchievementId;
+}
+
+/**
+ * Una invitación a una sala que sigue abierta (vencen a los 30 minutos).
+ */
+export interface RoomInvitation {
+    id: string;
+    from: RoomPlayer;
+    room: RoomInfo;
+    at: string;
 }
 
 /**
@@ -421,6 +450,25 @@ export interface DailyLeaderboard {
      * La fila del usuario, si jugó ese día (aunque esté en `top`).
      */
     me?: DailyRow;
+}
+
+/**
+ * `GET /friends`.
+ */
+export interface FriendsView {
+    /**
+     * Conectados primero; después por nombre.
+     */
+    friends: FriendView[];
+    /**
+     * Solicitudes que recibió.
+     */
+    incoming: FriendRequestView[];
+    /**
+     * Solicitudes que mandó y siguen pendientes.
+     */
+    outgoing: FriendRequestView[];
+    invitations: RoomInvitation[];
 }
 
 /**
@@ -588,6 +636,13 @@ export interface DailyAttemptView {
 }
 
 /**
+ * `POST /friends/requests`: por nombre visible (sin distinguir mayúsculas).
+ */
+export interface FriendRequest {
+    displayName: string;
+}
+
+/**
  * `POST /play/rounds/{id}/actions`.
  */
 export interface RoundActionRequest {
@@ -618,6 +673,13 @@ export interface NewRoundRequest {
      * UUID generado por el cliente; repetirlo devuelve la misma respuesta.
      */
     idempotencyKey: string;
+}
+
+/**
+ * `POST /rooms/{code}/invite`.
+ */
+export interface InviteRequest {
+    userId: string;
 }
 
 /**
@@ -844,6 +906,11 @@ export interface DealerView {
      * Cartas que pidió el dealer, en orden, para animarlas una a una.
      */
     hits: CardView[];
+}
+
+export interface FriendRequestView {
+    user: RoomPlayer;
+    at: string;
 }
 
 export interface HandView {

@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.from_id, r.to_id, r.created_at, u.id AS other, u.display_name,\n                  c.title AS \"title?\"\n           FROM friend_requests r\n           JOIN users u ON u.id = CASE WHEN r.from_id = $1 THEN r.to_id ELSE r.from_id END\n           LEFT JOIN user_cosmetics c ON c.user_id = u.id\n           WHERE r.from_id = $1 OR r.to_id = $1\n           ORDER BY r.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "from_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "friend_requests",
+            "name": "from_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "to_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "friend_requests",
+            "name": "to_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "friend_requests",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "other",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_cosmetics",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f14e690a36f9875cd898f25af458d6462109fadb0631e851548111f1ffd5ad3d"
+}
