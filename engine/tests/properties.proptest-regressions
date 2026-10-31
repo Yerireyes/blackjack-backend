@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8326c7df2976b7fb6a9c4522c9592da1e935f1140eae07ced068a08de5e2d96d # shrinks to s = State { rules: Rules { decks: 3, dealer_hits_soft17: false, double_after_split: true, double_on: Any, max_split_hands: 4, resplit_aces: false, hit_split_aces: false, surrender: None, dealer_peeks: false, blackjack_pays: 1.5, penetration: 0.75 }, shoe: [0, 8, 7, 9, 10, 8, 11, 7, 7, 34], hand: [Rank(9), Rank(0), Rank(9)], up: Rank(0) }
