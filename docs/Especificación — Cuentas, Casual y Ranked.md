@@ -342,6 +342,8 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 | GET | `/daily/me` | El intento de hoy o 404 |
 | GET | `/daily/leaderboard?day=` | Top 100 del día por saldo final + la fila del usuario |
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas |
+| GET | `/me/history?kind=&before=&limit=` | Rondas liquidadas, de la más reciente a la más antigua |
+| GET | `/me/stats` | Resultados por modo y estadísticas de decisiones (puntos débiles) |
 | GET | `/cosmetics` | Catálogo de cosméticos (público) |
 | GET · PUT | `/me/cosmetics` | Los que tiene y los que tiene puestos; `PUT` los cambia |
 
@@ -598,6 +600,27 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
 - **Revisión (Ranked y reto diario):** la decisión del seguro no entra en `review`. El EV
   está en `analyze_hand` (`insuranceEv`) para quien quiera mostrarlo en las ayudas.
 - **Salas:** ver «Especificación — Salas Casual.md», sección 5.
+
+### 8.7 Historial, estadísticas y entrenamiento dirigido
+
+Lógica en `api/src/routes/stats.rs`; índice `rounds_user_settled` en
+`api/migrations/20261103000001_history.sql`.
+
+- **Historial** (`GET /me/history?kind=&before=&limit=`): las rondas liquidadas de Casual,
+  Ranked y el reto diario, de la más reciente a la más antigua, de a 1–50 (20 por defecto).
+  Cada una con las manos, el dealer revelado, el seguro y, en Ranked y el reto, la revisión.
+  `nextBefore` pide la página siguiente. Las rondas de las salas viven en memoria y no
+  quedan.
+- **Situación de cada decisión:** desde esta versión, cada `ReviewItem` guarda `spot`:
+  tipo de mano (`hard`, `soft`, `pair`), total, rango del par y carta visible del dealer.
+  Las revisiones anteriores no la tienen: cuentan en los totales, no en los grupos.
+- **Estadísticas** (`GET /me/stats`): por modo, rondas, neto, ganadas, empatadas, perdidas,
+  blackjacks y la mejor y peor ronda. De las decisiones revisadas (las últimas 5.000
+  rondas de Ranked y el reto): total, óptimas, EV perdido, por tipo de mano y hasta 10
+  **puntos débiles**: las situaciones con al menos un error, ordenadas por EV perdido.
+- **Entrenamiento dirigido:** lo arma el front en Práctica (en el navegador), repartiendo
+  manos de los `weakSpots` contra esa carta del dealer. El backend no reparte esas manos:
+  solo dice cuáles practicar. Casual no aporta datos porque no se revisa.
 
 ---
 

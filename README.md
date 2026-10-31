@@ -320,6 +320,8 @@ estrategia, con re-división real):
 | GET | `/daily/me` | El intento del reto de hoy | Sí |
 | GET | `/daily/leaderboard?day=AAAA-MM-DD` | Top 100 por saldo final del día | No |
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas | Sí |
+| GET | `/me/history` | Historial de rondas liquidadas (`?kind=&before=&limit=`) | Sí |
+| GET | `/me/stats` | Resultados por modo y puntos débiles de las decisiones revisadas | Sí |
 | GET | `/cosmetics` | Catálogo de cosméticos y el logro que desbloquea cada uno | No |
 | GET · PUT | `/me/cosmetics` | Cosméticos que tiene y los que tiene puestos | Sí |
 | POST | `/rooms` | Crea una sala multijugador (pública o privada) | Sí |
