@@ -28,6 +28,22 @@ export interface CardView {
 export type CosmeticId = "feltGreen" | "feltBlue" | "feltRed" | "feltBlack" | "backClassic" | "backGold" | "backMidnight" | "chipsClassic" | "chipsNeon" | "chipsGold" | "titleRookie" | "titleCoolHead" | "titleByTheBook" | "titleMedalist";
 
 /**
+ * Decisiones en una situación.
+ */
+export interface SpotStats {
+    spot: DecisionSpot;
+    decisions: number;
+    /**
+     * Las que fueron la óptima.
+     */
+    optimal: number;
+    /**
+     * EV perdido en total, en unidades de la apuesta (Σ evBest − evChosen).
+     */
+    evLost: number;
+}
+
+/**
  * Dónde se usa un cosmético.
  */
 export type CosmeticSlot = "felt" | "cardBack" | "chips" | "title";
@@ -63,6 +79,24 @@ export interface TableRoundView {
      */
     allowed: AllowedActions;
     peekBlackjack: boolean;
+}
+
+/**
+ * Las decisiones revisadas (Ranked y reto diario; Casual no se revisa).
+ */
+export interface DecisionStats {
+    decisions: number;
+    optimal: number;
+    evLost: number;
+    /**
+     * Duras, suaves y pares, en ese orden (solo las que tienen decisiones).
+     */
+    byKind: KindStats[];
+    /**
+     * Hasta 10 situaciones donde más EV se perdió (con al menos un error): lo que el
+     * entrenamiento dirigido debería repetir.
+     */
+    weakSpots: SpotStats[];
 }
 
 /**
@@ -184,6 +218,30 @@ export interface SeasonResult {
 }
 
 /**
+ * Resultados de un modo.
+ */
+export interface ModeStats {
+    kind: RoundKind;
+    rounds: number;
+    /**
+     * Neto total en fichas.
+     */
+    net: number;
+    /**
+     * Rondas con neto positivo, cero y negativo.
+     */
+    wins: number;
+    pushes: number;
+    losses: number;
+    blackjacks: number;
+    /**
+     * Mejor y peor neto de una ronda.
+     */
+    bestWin: number;
+    worstLoss: number;
+}
+
+/**
  * Todo lo que se ve de la sala. Llega en cada cambio: reemplazar el estado local.
  */
 export interface RoomState {
@@ -252,6 +310,34 @@ export interface CosmeticItem {
 }
 
 /**
+ * Una ronda liquidada (Casual, Ranked o reto diario). Las de las salas viven en memoria
+ * y no quedan en el historial.
+ */
+export interface HistoryItem {
+    id: string;
+    kind: RoundKind;
+    contextId: string;
+    bet: number;
+    /**
+     * Neto en fichas, seguro incluido.
+     */
+    net: number;
+    settledAt: string;
+    player: PlayerView;
+    /**
+     * Con la oculta y las cartas que pidió el dealer.
+     */
+    dealer: DealerView;
+    peekBlackjack: boolean;
+    insured?: boolean;
+    insuranceNet?: number;
+    /**
+     * Ranked y reto diario: la revisión de cada decisión.
+     */
+    review?: ReviewItem[];
+}
+
+/**
  * Una sala, para el lobby y la invitación.
  */
 export interface RoomInfo {
@@ -282,6 +368,26 @@ export interface RoomInfo {
     preset?: Preset;
     aids: boolean;
     createdAt: string;
+}
+
+/**
+ * Una situación de juego, para agrupar las decisiones: tipo de mano, total y carta
+ * visible del dealer. Es lo que el entrenamiento dirigido repite.
+ */
+export interface DecisionSpot {
+    kind: SpotKind;
+    /**
+     * Total de la mano (un As cuenta 11 si no se pasa).
+     */
+    total: number;
+    /**
+     * En un par: el rango de las cartas (0 = As … 9 = diez).
+     */
+    pair?: number;
+    /**
+     * Carta visible del dealer, como rango del motor (0 = As … 9 = diez).
+     */
+    dealerUp: number;
 }
 
 /**
@@ -347,12 +453,37 @@ export interface MyCosmetics {
 }
 
 /**
+ * `GET /me/history`.
+ */
+export interface HistoryPage {
+    /**
+     * De la más reciente a la más antigua.
+     */
+    items: HistoryItem[];
+    /**
+     * Para la página siguiente: `?before=<esto>`. Falta si no hay más.
+     */
+    nextBefore?: string;
+}
+
+/**
  * `GET /me/records`.
  */
 export interface MyRecords {
     casual: CasualRecords;
     ranked: RankedRecords;
     daily: DailyRecords;
+}
+
+/**
+ * `GET /me/stats`.
+ */
+export interface MyStats {
+    /**
+     * Solo los modos en los que jugó.
+     */
+    modes: ModeStats[];
+    decisions: DecisionStats;
 }
 
 /**
@@ -730,6 +861,13 @@ export interface HandView {
     net?: number;
 }
 
+export interface KindStats {
+    kind: SpotKind;
+    decisions: number;
+    optimal: number;
+    evLost: number;
+}
+
 export interface LeaderboardRow {
     /**
      * Posición, desde 1. Empates comparten posición.
@@ -798,6 +936,10 @@ export interface ReviewItem {
     evChosen: number;
     evBest: number;
     exact: boolean;
+    /**
+     * La situación de la decisión (falta en las rondas anteriores a guardarla).
+     */
+    spot?: DecisionSpot;
 }
 
 export interface RoomSeat {
@@ -897,6 +1039,8 @@ export type RoomPhase = "waiting" | "betting" | "playing" | "results";
 export type RoomVisibility = "public" | "private";
 
 export type RoundKind = "casual" | "ranked" | "daily";
+
+export type SpotKind = "hard" | "soft" | "pair";
 
 export type Suit = "S" | "H" | "D" | "C";
 

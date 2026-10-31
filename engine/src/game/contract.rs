@@ -190,6 +190,37 @@ pub struct ReviewItem {
     pub ev_chosen: f64,
     pub ev_best: f64,
     pub exact: bool,
+    /// La situación de la decisión (falta en las rondas anteriores a guardarla).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub spot: Option<DecisionSpot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub enum SpotKind {
+    Hard,
+    Soft,
+    /// Dos cartas del mismo rango (se podía dividir o no).
+    Pair,
+}
+
+/// Una situación de juego, para agrupar las decisiones: tipo de mano, total y carta
+/// visible del dealer. Es lo que el entrenamiento dirigido repite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct DecisionSpot {
+    pub kind: SpotKind,
+    /// Total de la mano (un As cuenta 11 si no se pasa).
+    pub total: u8,
+    /// En un par: el rango de las cartas (0 = As … 9 = diez).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub pair: Option<u8>,
+    /// Carta visible del dealer, como rango del motor (0 = As … 9 = diez).
+    pub dealer_up: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1014,4 +1045,115 @@ pub enum ServerMessage {
     Closed {
         reason: String,
     },
+}
+
+// ---- Historial y estadísticas ----
+
+/// Una ronda liquidada (Casual, Ranked o reto diario). Las de las salas viven en memoria
+/// y no quedan en el historial.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct HistoryItem {
+    pub id: String,
+    pub kind: RoundKind,
+    pub context_id: String,
+    pub bet: i64,
+    /// Neto en fichas, seguro incluido.
+    pub net: i64,
+    pub settled_at: String,
+    pub player: PlayerView,
+    /// Con la oculta y las cartas que pidió el dealer.
+    pub dealer: DealerView,
+    pub peek_blackjack: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub insured: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub insurance_net: Option<i64>,
+    /// Ranked y reto diario: la revisión de cada decisión.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub review: Option<Vec<ReviewItem>>,
+}
+
+/// `GET /me/history`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct HistoryPage {
+    /// De la más reciente a la más antigua.
+    pub items: Vec<HistoryItem>,
+    /// Para la página siguiente: `?before=<esto>`. Falta si no hay más.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub next_before: Option<String>,
+}
+
+/// Resultados de un modo.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct ModeStats {
+    pub kind: RoundKind,
+    pub rounds: u32,
+    /// Neto total en fichas.
+    pub net: i64,
+    /// Rondas con neto positivo, cero y negativo.
+    pub wins: u32,
+    pub pushes: u32,
+    pub losses: u32,
+    pub blackjacks: u32,
+    /// Mejor y peor neto de una ronda.
+    pub best_win: i64,
+    pub worst_loss: i64,
+}
+
+/// Decisiones en una situación.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct SpotStats {
+    pub spot: DecisionSpot,
+    pub decisions: u32,
+    /// Las que fueron la óptima.
+    pub optimal: u32,
+    /// EV perdido en total, en unidades de la apuesta (Σ evBest − evChosen).
+    pub ev_lost: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct KindStats {
+    pub kind: SpotKind,
+    pub decisions: u32,
+    pub optimal: u32,
+    pub ev_lost: f64,
+}
+
+/// Las decisiones revisadas (Ranked y reto diario; Casual no se revisa).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct DecisionStats {
+    pub decisions: u32,
+    pub optimal: u32,
+    pub ev_lost: f64,
+    /// Duras, suaves y pares, en ese orden (solo las que tienen decisiones).
+    pub by_kind: Vec<KindStats>,
+    /// Hasta 10 situaciones donde más EV se perdió (con al menos un error): lo que el
+    /// entrenamiento dirigido debería repetir.
+    pub weak_spots: Vec<SpotStats>,
+}
+
+/// `GET /me/stats`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct MyStats {
+    /// Solo los modos en los que jugó.
+    pub modes: Vec<ModeStats>,
+    pub decisions: DecisionStats,
 }

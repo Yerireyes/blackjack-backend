@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::card::{hand_value, is_pair, Card};
 use super::contract::{
-    AllowedActions, CardView, DealerView, HandOutcome, HandView, PlayerView, ReviewItem,
-    RoundPhase as Phase,
+    AllowedActions, CardView, DealerView, DecisionSpot, HandOutcome, HandView, PlayerView,
+    ReviewItem, RoundPhase as Phase, SpotKind,
 };
 use super::shoe::GameShoe;
 use super::GameError;
@@ -252,6 +252,7 @@ impl Round {
         let (Some(c), Some(b)) = (ev(chosen), ev(analysis.best)) else {
             return;
         };
+        let h = &self.hands[self.active];
         self.decisions.push(ReviewItem {
             hand_index: self.active as u32,
             chosen,
@@ -259,6 +260,7 @@ impl Round {
             ev_chosen: c.ev,
             ev_best: b.ev,
             exact: c.exact && b.exact,
+            spot: Some(decision_spot(&h.cards, h.from_split, self.dealer.up)),
         });
     }
 
@@ -325,6 +327,24 @@ impl Round {
 /// `round(x)` como `Math.round` de JavaScript (los medios redondean hacia arriba).
 pub(super) fn chips(units: f64, bet: i64) -> i64 {
     (units * bet as f64 + 0.5).floor() as i64
+}
+
+/// La situación de una mano frente a la carta visible del dealer.
+pub fn decision_spot(cards: &[Card], from_split: bool, up: Card) -> DecisionSpot {
+    let v = hand_value(cards, from_split);
+    let pair = is_pair(cards);
+    DecisionSpot {
+        kind: if pair.is_some() {
+            SpotKind::Pair
+        } else if v.soft {
+            SpotKind::Soft
+        } else {
+            SpotKind::Hard
+        },
+        total: v.total,
+        pair: pair.map(|r| r.index() as u8),
+        dealer_up: up.rank().index() as u8,
+    }
 }
 
 /// El seguro cuesta media apuesta (las apuestas son múltiplos de 10: siempre entero).
