@@ -559,3 +559,72 @@ async fn room_reconnection_and_host_transfer(pool: PgPool) {
         .await;
     assert_eq!(status, 409);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn room_insurance_before_the_peek(pool: PgPool) {
+    use Face::*;
+    // Asiento 1: 10,7; asiento 2: 9,8; dealer As + K. Dos rondas iguales.
+    let deal = [Ten, Nine, Ace, Seven, Eight, K];
+    let top: Vec<Face> = deal.iter().chain(deal.iter()).copied().collect();
+    let rooms = RoomsConfig {
+        turn_time: Duration::from_millis(400),
+        ..fast()
+    };
+    let s = server(pool, rooms, &top).await;
+    let ana = s.register("ana").await;
+    let beto = s.register("beto").await;
+    let code = s.room(&ana, false).await;
+    let (mut a, _) = s.connect(&code, &ana).await;
+    let (mut b, _) = s.connect(&code, &beto).await;
+    send(&mut a, json!({ "type": "sit", "seat": 1 })).await;
+    send(&mut b, json!({ "type": "sit", "seat": 2 })).await;
+    until(&mut a, |m| {
+        m["type"] == "state" && m["room"]["seats"][1]["player"].is_object()
+    })
+    .await;
+    send(&mut a, json!({ "type": "bet", "amount": 20 })).await;
+    send(&mut b, json!({ "type": "bet", "amount": 20 })).await;
+
+    let state = phase(&mut a, "playing").await;
+    assert_eq!(state["round"]["phase"], "insurance");
+    assert!(state["round"].get("turn").is_none());
+    send(&mut a, json!({ "type": "action", "action": "stand" })).await;
+    assert_eq!(error(&mut a).await, "not_your_turn");
+
+    // Ana asegura y Beto no: tras el peek, Ana queda en 0 y Beto pierde 20.
+    send(&mut a, json!({ "type": "insurance", "take": true })).await;
+    let state = until(&mut b, |m| {
+        m["type"] == "state" && m["room"]["round"]["seats"][0]["insured"] == true
+    })
+    .await;
+    assert_eq!(state["room"]["round"]["phase"], "insurance", "falta Beto");
+    send(&mut a, json!({ "type": "insurance", "take": false })).await;
+    assert_eq!(error(&mut a).await, "action_not_allowed");
+    send(&mut b, json!({ "type": "insurance", "take": false })).await;
+    let state = phase(&mut b, "results").await;
+    assert_eq!(state["round"]["peekBlackjack"], true);
+    let seats = &state["round"]["seats"];
+    assert_eq!(
+        (&seats[0]["net"], &seats[1]["net"]),
+        (&json!(0), &json!(-20))
+    );
+    assert_eq!(
+        (&state["seats"][0]["stack"], &state["seats"][1]["stack"]),
+        (&json!(500), &json!(480))
+    );
+
+    // Segunda ronda: nadie decide y al vencer el tiempo se rechaza por todos.
+    phase(&mut a, "betting").await;
+    send(&mut a, json!({ "type": "bet", "amount": 20 })).await;
+    send(&mut b, json!({ "type": "bet", "amount": 20 })).await;
+    let state = phase(&mut a, "results").await;
+    let seats = &state["round"]["seats"];
+    assert_eq!(
+        (&seats[0]["insured"], &seats[1]["insured"]),
+        (&json!(false), &json!(false))
+    );
+    assert_eq!(
+        (&seats[0]["net"], &seats[1]["net"]),
+        (&json!(-20), &json!(-20))
+    );
+}

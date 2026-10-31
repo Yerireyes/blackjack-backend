@@ -135,6 +135,7 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/rooms", post(rooms::create))
         .route("/play/rounds", post(play::deal))
         .route("/play/rounds/{id}/actions", post(play::act))
+        .route("/play/rounds/{id}/insurance", post(play::insurance))
         .layer(GovernorLayer::new(limits.play.clone()).error_handler(rate_limited));
 
     let other_routes = Router::new()

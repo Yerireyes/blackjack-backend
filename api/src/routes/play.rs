@@ -9,8 +9,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use engine::game::{
-    AchievementId, GameError, GameShoe, NewRoundRequest, Round, RoundActionRequest, RoundKind,
-    RoundPhase, RoundResult, RoundView, WalletView,
+    AchievementId, GameError, GameShoe, InsuranceRequest, NewRoundRequest, Round,
+    RoundActionRequest, RoundKind, RoundPhase, RoundResult, RoundView, WalletView,
 };
 use engine::{Action, Rules};
 use sqlx::types::Json as Jsonb;
@@ -211,19 +211,36 @@ fn no_active_round() -> ApiError {
     )
 }
 
-fn action_str(a: Action) -> &'static str {
-    match a {
-        Action::Stand => "stand",
-        Action::Hit => "hit",
-        Action::Double => "double",
-        Action::Split => "split",
-        Action::Surrender => "surrender",
+/// Lo que el jugador hace en una ronda.
+#[derive(Clone, Copy)]
+enum Move {
+    Act(Action),
+    /// Tomar (`true`) o rechazar el seguro.
+    Insure(bool),
+}
+
+impl Move {
+    fn as_str(self) -> &'static str {
+        match self {
+            Move::Act(Action::Stand) => "stand",
+            Move::Act(Action::Hit) => "hit",
+            Move::Act(Action::Double) => "double",
+            Move::Act(Action::Split) => "split",
+            Move::Act(Action::Surrender) => "surrender",
+            Move::Insure(true) => "insurance",
+            Move::Insure(false) => "noInsurance",
+        }
     }
+}
+
+/// Fichas del saldo que no están en juego (apuesta, dobles, divisiones y seguro).
+fn free_chips(balance: i64, bet: i64, round: &Round) -> i64 {
+    balance - bet * round.staked_units() as i64 - round.insurance_chips(bet)
 }
 
 /// Unidades extra que el saldo cubre con esta apuesta (doblar y dividir necesitan una).
 fn spare_units(balance: i64, bet: i64, round: &Round) -> u32 {
-    let free = balance - bet * round.staked_units() as i64;
+    let free = free_chips(balance, bet, round);
     (free.max(0) / bet).min(u32::MAX as i64) as u32
 }
 
@@ -263,6 +280,8 @@ fn round_view(id: Uuid, bet: i64, round: &Round, wallet: &Wallet, settled: Settl
     let settled = round.phase == RoundPhase::Settled;
     let competitive = wallet.competitive();
     let shoe = wallet.shoe();
+    let mut allowed = round.allowed(wallet.rules(), spare_units(wallet.balance(), bet, round));
+    allowed.insurance = round.can_insure(free_chips(wallet.balance(), bet, round), bet);
     RoundView {
         id: id.to_string(),
         kind: wallet.kind(),
@@ -271,8 +290,9 @@ fn round_view(id: Uuid, bet: i64, round: &Round, wallet: &Wallet, settled: Settl
         phase: round.phase,
         player: round.player_view(bet),
         dealer: round.dealer_view(),
-        allowed: round.allowed(wallet.rules(), spare_units(wallet.balance(), bet, round)),
+        allowed,
         peek_blackjack: round.peek_blackjack,
+        insured: round.insurance,
         wallet: wallet.wallet_view(),
         // Sin ayudas en Ranked ni en el reto: la composición solo la ve Casual.
         shoe_counts: (!competitive).then(|| round.unseen_counts(shoe)),
@@ -281,6 +301,7 @@ fn round_view(id: Uuid, bet: i64, round: &Round, wallet: &Wallet, settled: Settl
             net: round.net_chips(bet),
             refilled,
             review: competitive.then(|| round.decisions.clone()),
+            insurance_net: round.insurance_net(bet),
             unlocked,
         }),
     }
@@ -462,20 +483,25 @@ async fn lock_round(db: &mut PgConnection, user_id: Uuid, id: Uuid) -> ApiResult
     Ok(row)
 }
 
-/// Aplica `action` a la ronda, la guarda junto con la cartera y registra la acción
-/// con su respuesta.
+/// Aplica el movimiento a la ronda, la guarda junto con la cartera y registra la
+/// acción con su respuesta.
 async fn apply_action(
     db: &mut PgConnection,
     user_id: Uuid,
     row: &RoundRow,
     round: &mut Round,
     wallet: &mut Wallet,
-    action: Action,
+    mv: Move,
     key: Uuid,
 ) -> ApiResult<RoundView> {
+    let free = free_chips(wallet.balance(), row.bet, round);
     let spare = spare_units(wallet.balance(), row.bet, round);
     let (shoe, rules) = wallet.table();
-    round.act(action, shoe, rules, spare).map_err(game_error)?;
+    match mv {
+        Move::Act(action) => round.act(action, shoe, rules, spare),
+        Move::Insure(take) => round.insure(take, free, row.bet, shoe, rules),
+    }
+    .map_err(game_error)?;
     let settled = round.phase == RoundPhase::Settled;
     let outcome = if settled {
         settle(db, user_id, round, row.bet, wallet).await?
@@ -498,7 +524,7 @@ async fn apply_action(
          VALUES ($1, $2, (SELECT count(*) + 1 FROM round_actions WHERE round_id = $2), $3, $4, $5)",
         Uuid::new_v4(),
         row.id,
-        action_str(action),
+        mv.as_str(),
         key,
         Jsonb(&view) as _
     )
@@ -536,6 +562,27 @@ pub async fn act(
     ApiJson(req): ApiJson<RoundActionRequest>,
 ) -> ApiResult<Json<RoundView>> {
     let key = idempotency_key(&req.idempotency_key)?;
+    play_move(&state, user, round_id, key, Move::Act(req.action)).await
+}
+
+/// `POST /play/rounds/{id}/insurance`: con As visible, tomar o rechazar el seguro.
+pub async fn insurance(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiPath(round_id): ApiPath<Uuid>,
+    ApiJson(req): ApiJson<InsuranceRequest>,
+) -> ApiResult<Json<RoundView>> {
+    let key = idempotency_key(&req.idempotency_key)?;
+    play_move(&state, user, round_id, key, Move::Insure(req.take)).await
+}
+
+async fn play_move(
+    state: &AppState,
+    user: AuthUser,
+    round_id: Uuid,
+    key: Uuid,
+    mv: Move,
+) -> ApiResult<Json<RoundView>> {
     let mut tx = state.pool.begin().await?;
     lock_user(&mut tx, user.id).await?;
     let row = lock_round(&mut tx, user.id, round_id)
@@ -562,17 +609,11 @@ pub async fn act(
     }
     let mut wallet = lock_wallet(&mut tx, user.id, &row.kind, row.context_id).await?;
     let mut round = row.state.0.clone();
-    review_decision(&mut round, &wallet, row.bet, req.action).await;
-    let view = apply_action(
-        &mut tx,
-        user.id,
-        &row,
-        &mut round,
-        &mut wallet,
-        req.action,
-        key,
-    )
-    .await?;
+    // El seguro no se revisa: solo las decisiones de juego.
+    if let Move::Act(action) = mv {
+        review_decision(&mut round, &wallet, row.bet, action).await;
+    }
+    let view = apply_action(&mut tx, user.id, &row, &mut round, &mut wallet, mv, key).await?;
     tx.commit().await?;
     Ok(Json(view))
 }
@@ -600,8 +641,8 @@ pub async fn active(State(state): State<AppState>, user: AuthUser) -> ApiResult<
     )))
 }
 
-/// Cierra las rondas sin acciones durante 24 h plantándose en todas las manos
-/// pendientes (sin revisión). Devuelve cuántas cerró.
+/// Cierra las rondas sin acciones durante 24 h rechazando el seguro si estaba pendiente
+/// y plantándose en todas las manos (sin revisión). Devuelve cuántas cerró.
 pub async fn close_stale_rounds(pool: &PgPool) -> ApiResult<u64> {
     let stale = sqlx::query!(
         "SELECT r.id, r.user_id FROM rounds r
@@ -624,14 +665,19 @@ pub async fn close_stale_rounds(pool: &PgPool) -> ApiResult<u64> {
         }
         let mut wallet = lock_wallet(&mut tx, r.user_id, &row.kind, row.context_id).await?;
         let mut round = row.state.0.clone();
-        while round.phase == RoundPhase::Player {
+        while round.phase != RoundPhase::Settled {
+            let mv = if round.phase == RoundPhase::Insurance {
+                Move::Insure(false)
+            } else {
+                Move::Act(Action::Stand)
+            };
             apply_action(
                 &mut tx,
                 r.user_id,
                 &row,
                 &mut round,
                 &mut wallet,
-                Action::Stand,
+                mv,
                 Uuid::new_v4(),
             )
             .await?;

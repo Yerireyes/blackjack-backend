@@ -73,4 +73,9 @@ impl Solver {
     pub fn dealer_mut(&mut self) -> &mut DealerSolver {
         &mut self.dealer
     }
+
+    /// Nodos memoizados (jugador y dealer): mide cuánta memoria ocupa.
+    pub fn memo_len(&self) -> usize {
+        self.memo_best.len() + self.dealer.memo_len()
+    }
 }

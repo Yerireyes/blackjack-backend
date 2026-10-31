@@ -1,0 +1,73 @@
+# Lo mismo que se verifica a mano antes de cada PR: formato, clippy, todos los tests contra
+# PostgreSQL, compilación sin base (datos de .sqlx) y el contrato TypeScript al día.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Las consultas se comprueban contra .sqlx: si alguien cambia una sin `npm run
+  # sqlx:prepare`, falla la compilación.
+  SQLX_OFFLINE: "true"
+
+jobs:
+  rust:
+    name: Rust (formato, clippy y tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: blackjack
+          POSTGRES_PASSWORD: blackjack
+          POSTGRES_DB: blackjack
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U blackjack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # `#[sqlx::test]` crea una base nueva por test a partir de esta conexión.
+      DATABASE_URL: postgres://blackjack:blackjack@localhost:5432/blackjack
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formato
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests (motor, API y salas)
+        run: cargo test --workspace
+
+  contract:
+    name: WASM y contrato TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compilar el paquete WASM
+        run: npm run build:wasm
+      - name: Contrato al día
+        run: npm run check:contract
+      - name: Prueba de humo del WASM
+        run: npm run smoke:wasm

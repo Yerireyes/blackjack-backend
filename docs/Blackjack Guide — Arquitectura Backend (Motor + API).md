@@ -229,7 +229,7 @@ Con As visible y antes del peek: p = n\_10 / N. EV del seguro por unidad apostad
 ### 10. Rendimiento
 
 - `f64` en todo el cálculo; nada de redondeos internos.
-- Memo `FxHashMap` por llamada. El worker puede conservar una caché acotada (LRU) entre llamadas, porque el zapato cambia poco de una mano a otra.
+- Memo `FxHashMap` por llamada. El worker puede conservar una caché acotada (LRU) entre llamadas, porque el zapato cambia poco de una mano a otra. **Hecho** en `engine/src/cache.rs`: encendida en WASM, apagada en la API (ver README, «Rendimiento»).
 - Objetivos a medir con `criterion` en una laptop media: `analyze_hand` sin dividir por debajo de 100 ms con 8 mazos; con dividir, por debajo de 500 ms. Si no se cumplen, optimizar antes de agregar funciones.
 
 ## API pública del motor y binding WASM

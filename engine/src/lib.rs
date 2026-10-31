@@ -5,6 +5,7 @@
 //! estrategia ni probabilidades precalculadas. El motor no depende del entorno
 //! (ni red, ni archivos, ni reloj).
 
+pub mod cache;
 pub mod dealer;
 pub mod dto;
 pub mod error;
@@ -45,15 +46,16 @@ pub fn analyze_hand(req: AnalyzeHandRequest) -> Result<AnalyzeHandResponse, Engi
             "isSplitAces requiere splitHandsSoFar > 0".into(),
         ));
     }
-    let mut solver = Solver::new(&req.rules, req.dealer_up);
-    let mut res = hand_response(
-        &mut solver,
-        &shoe,
-        &req.hand,
-        req.split_hands_so_far,
-        req.is_split_aces,
-        req.allowed,
-    );
+    let mut res = cache::with_solver(&req.rules, req.dealer_up, |solver| {
+        hand_response(
+            solver,
+            &shoe,
+            &req.hand,
+            req.split_hands_so_far,
+            req.is_split_aces,
+            req.allowed,
+        )
+    });
     res.version = req.version;
     Ok(res)
 }
@@ -82,14 +84,16 @@ pub fn analyze_dealer(req: AnalyzeDealerRequest) -> Result<AnalyzeDealerResponse
         Some(req.up)
     };
     let shoe = validate_shoe(&req.rules, &req.shoe, &cards, peek_up)?;
-    let mut solver = Solver::new(&req.rules, req.up);
-    let (dist, p_bust_next) = match req.hole {
+    let (dist, p_bust_next) = cache::with_solver(&req.rules, req.up, |solver| match req.hole {
         Some(_) => {
             let dealer = solver.dealer_mut();
-            (dealer.with_cards(&cards, &shoe), dealer.p_bust_next(&cards, &shoe))
+            (
+                dealer.with_cards(&cards, &shoe),
+                dealer.p_bust_next(&cards, &shoe),
+            )
         }
         None => (solver.dealer_dist(&shoe), None),
-    };
+    });
     Ok(AnalyzeDealerResponse {
         version: req.version,
         dealer: dist.into(),
@@ -110,16 +114,16 @@ pub fn analyze_round(req: AnalyzeRoundRequest) -> Result<AnalyzeRoundResponse, E
         validate_hand(h)?;
     }
     // Mismo zapato y misma carta visible: un solo Solver comparte toda la memoización.
-    let mut solver = Solver::new(&req.rules, req.up);
-    let hands: Vec<AnalyzeHandResponse> = req
-        .hands
-        .iter()
-        .map(|cards| {
-            let mut r = hand_response(&mut solver, &shoe, cards, 0, false, Allowed::default());
-            r.version = req.version;
-            r
-        })
-        .collect();
+    let hands: Vec<AnalyzeHandResponse> = cache::with_solver(&req.rules, req.up, |solver| {
+        req.hands
+            .iter()
+            .map(|cards| {
+                let mut r = hand_response(solver, &shoe, cards, 0, false, Allowed::default());
+                r.version = req.version;
+                r
+            })
+            .collect()
+    });
     let best_sum: f64 = hands
         .iter()
         .map(|h| {
@@ -221,8 +225,15 @@ fn hand_response(
         best,
         p_bust_on_hit: solver.p_bust_on_hit(shoe, hand),
         dealer: solver.dealer_dist(shoe).into(),
+        insurance_ev: solver.up().is_ace().then(|| insurance_ev(shoe)),
         compute_ms: 0.0,
     }
+}
+
+/// EV del seguro por ficha apostada: gana 2 si la oculta vale 10 y pierde 1 si no.
+/// `shoe` son las cartas sin ver, con la oculta dentro.
+pub fn insurance_ev(shoe: &Shoe) -> f64 {
+    3.0 * shoe.prob(Rank::TEN) - 1.0
 }
 
 /// Valida el zapato frente a las cartas visibles y devuelve el `Shoe`.

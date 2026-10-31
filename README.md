@@ -177,6 +177,21 @@ npm run db:migrate       # aplica migraciones con sqlx-cli
 npm run sqlx:prepare     # regenera .sqlx tras cambiar consultas SQL
 ```
 
+### CI (GitHub Actions)
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre en cada PR y en cada push a
+`main`, en dos trabajos en paralelo:
+
+- **Rust:** `cargo fmt --check`, `cargo clippy -D warnings` y `cargo test --workspace` contra
+  un PostgreSQL 18 de servicio. Compila con `SQLX_OFFLINE=true`, así que una consulta nueva
+  sin `npm run sqlx:prepare` hace fallar la CI.
+- **WASM y contrato:** `npm run build:wasm`, `npm run check:contract` (falla si
+  `contract.ts` no coincide con Rust) y `npm run smoke:wasm`.
+
+Para que un PR no se pueda fusionar con la CI en rojo: en GitHub, *Settings → Branches →
+Branch protection rules* para `main`, con «Require status checks to pass» y los dos
+trabajos marcados.
+
 Uso del motor desde el front (Web Worker), con la dependencia
 `"@bj/engine-wasm": "file:../Backend/engine-wasm/pkg"`:
 
@@ -213,7 +228,10 @@ const res = analyzeHand({ version: 1, rules, shoe, hand: [9, 5], dealerUp: 9 });
 - **Zapato mínimo**: suma de valores ≥ 60, así la recursión nunca se queda sin cartas.
 - **Empates de EV**: gana la acción que va primero (plantarse, pedir, doblar, dividir,
   rendirse).
-- **Seguro**: no implementado (opcional en el diseño).
+- **Seguro**: con un As visible, `analyzeHand` trae `insuranceEv` = `3p − 1` por ficha
+  puesta en el seguro (`p` = probabilidad de que la oculta valga 10, con la oculta contada
+  como no vista). Solo es positivo con muchos dieces en el zapato. En las mesas del
+  servidor el seguro se ofrece antes del peek (fase `insurance`).
 
 ### Dividir (fase 9)
 
@@ -440,10 +458,19 @@ Medido con `cargo bench` en la máquina de desarrollo: `analyze_hand` sin dividi
 gracias al presupuesto del exacto (objetivo < 500 ms). En WASM, 10,6 vs 10 con 6
 mazos tarda ~1–2 ms.
 
+**Caché entre llamadas** ([`engine/src/cache.rs`](engine/src/cache.rs)): el motor conserva
+los `Solver` (con su memoización) entre llamadas, uno por reglas y carta visible, con
+reemplazo LRU entre 10 y un tope de 600 mil nodos (~50 MB) entre todos. Como la memoización
+usa como clave el zapato exacto, los resultados son idénticos bit a bit (test
+`engine/tests/cache.rs`). La decisión siguiente a pedir pasa de ~67 µs a ~0,3 µs, y repetir
+una pregunta pesada (un re-render) sale gratis. Encendida solo en WASM (el Web Worker): en
+la API cada hilo bloqueante tendría la suya, así que ahí queda apagada. Los benchmarks la
+apagan para medir en frío, salvo `cached_next_decision_6d`.
+
 ## Pendiente
 
 - Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
   óptimas no cuenta Casual (sección 8.1).
-- Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
-- CI: `cargo test`, `npm run check:contract`, `SQLX_OFFLINE=true` y comparación de
-  benchmarks (> 20 %).
+- CI: comparar benchmarks entre ramas (avisar si algo empeora más de un 20 %). Las máquinas
+  de GitHub dan tiempos muy variables, así que hace falta un runner fijo o muchas
+  repeticiones para que sea confiable.

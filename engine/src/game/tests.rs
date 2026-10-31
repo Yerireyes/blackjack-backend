@@ -40,6 +40,11 @@ fn deals_player_up_player_hole_without_revealing_it() {
 fn peek_blackjack_ends_the_round_at_the_deal() {
     let rules = vegas();
     let (mut round, mut shoe) = deal(&rules, &[Ten, Ace, Seven, K]);
+    // Con As visible primero se ofrece el seguro; el peek llega después.
+    assert_eq!(round.phase, RoundPhase::Insurance);
+    assert!(!round.peek_blackjack);
+    assert_eq!(round.allowed(&rules, PLENTY), AllowedActions::default());
+    round.insure(false, 100, 10, &mut shoe, &rules).unwrap();
     assert!(round.peek_blackjack);
     assert_eq!(round.phase, RoundPhase::Settled);
     assert_eq!(round.hands[0].outcome, Some(HandOutcome::Lose));
@@ -165,6 +170,7 @@ fn europe_dealer_blackjack_without_peek_takes_doubles() {
     // Sin peek el jugador juega; el blackjack del dealer se lleva lo doblado.
     let rules = Preset::Europe.rules();
     let (mut round, mut shoe) = deal(&rules, &[Six, Ace, Five, K, Nine]);
+    round.insure(false, 100, 10, &mut shoe, &rules).unwrap();
     assert_eq!(round.phase, RoundPhase::Player);
     round
         .act(Action::Double, &mut shoe, &rules, PLENTY)
@@ -242,6 +248,11 @@ fn random_play_properties() {
             }
             let unseen_before = shoe.remaining_counts().iter().sum::<u16>();
             let mut round = Round::deal(&mut shoe, &rules).unwrap();
+            if round.phase == RoundPhase::Insurance {
+                assert_eq!(round.dealer_view().hole, None);
+                let take = below(2) == 0;
+                round.insure(take, 100, 10, &mut shoe, &rules).unwrap();
+            }
             while round.phase == RoundPhase::Player {
                 // La oculta no se ve mientras el jugador decide.
                 assert_eq!(round.dealer_view().hole, None);
@@ -273,7 +284,9 @@ fn random_play_properties() {
                 .iter()
                 .map(|h| h.net.unwrap())
                 .sum();
-            assert_eq!(shown, round.net_chips(10));
+            // El neto de la ronda es el de las manos más el del seguro.
+            let insurance = round.insurance_net(10).unwrap_or(0);
+            assert_eq!(shown + insurance, round.net_chips(10));
             // Ninguna carta repartida dos veces: lo repartido sale del zapato.
             let dealt = (unseen_before - shoe.remaining_counts().iter().sum::<u16>()) as usize;
             let on_table = round.hands.iter().map(|h| h.cards.len()).sum::<usize>()
@@ -323,4 +336,90 @@ fn analysis_request_is_what_the_player_sees() {
     round.act(Action::Stand, &mut shoe, &rules, PLENTY).unwrap();
     assert_eq!(round.phase, RoundPhase::Settled);
     assert!(round.analysis_request(&rules, &shoe, PLENTY).is_none());
+}
+
+#[test]
+fn insurance_pays_two_to_one_against_a_dealer_blackjack() {
+    let rules = vegas();
+    // 10,7 contra As + K: con seguro, la mano pierde 10 y el seguro gana 10.
+    let (mut round, mut shoe) = deal(&rules, &[Ten, Ace, Seven, K]);
+    assert!(round.can_insure(5, 10));
+    assert!(!round.can_insure(4, 10), "el seguro cuesta media apuesta");
+    assert_eq!(
+        round.insure(true, 4, 10, &mut shoe, &rules),
+        Err(GameError::ActionNotAllowed)
+    );
+    round.insure(true, 5, 10, &mut shoe, &rules).unwrap();
+    assert_eq!(round.insurance, Some(true));
+    assert_eq!(round.phase, RoundPhase::Settled);
+    assert_eq!(round.insurance_net(10), Some(10));
+    assert_eq!(round.net_chips(10), 0);
+    // Ya no se puede decidir otra vez.
+    assert_eq!(
+        round.insure(false, 5, 10, &mut shoe, &rules),
+        Err(GameError::ActionNotAllowed)
+    );
+}
+
+#[test]
+fn insurance_is_lost_without_dealer_blackjack() {
+    let rules = vegas();
+    // 10,9 contra As + 7: se pierde el seguro (−5) y la mano gana a 18 (+10).
+    let (mut round, mut shoe) = deal(&rules, &[Ten, Ace, Nine, Seven]);
+    round.insure(true, 100, 10, &mut shoe, &rules).unwrap();
+    assert_eq!(round.insurance_chips(10), 5);
+    assert_eq!(round.phase, RoundPhase::Player);
+    round.act(Action::Stand, &mut shoe, &rules, PLENTY).unwrap();
+    assert_eq!(round.insurance_net(10), Some(-5));
+    assert_eq!(round.net_chips(10), 10 - 5);
+}
+
+#[test]
+fn even_money_is_insurance_on_a_blackjack() {
+    let rules = vegas();
+    // Blackjack contra As: con seguro gana 10 haya o no blackjack del dealer.
+    for hole in [K, Seven] {
+        let (mut round, mut shoe) = deal(&rules, &[Ace, Ace, K, hole]);
+        round.insure(true, 100, 10, &mut shoe, &rules).unwrap();
+        assert_eq!(round.phase, RoundPhase::Settled);
+        assert_eq!(round.net_chips(10), 10, "oculta {hole:?}");
+    }
+}
+
+#[test]
+fn insurance_ev_is_three_p_minus_one() {
+    use crate::rank::Rank;
+    let rules = vegas();
+    let mut shoe = [24u16; 10];
+    shoe[9] = 96;
+    // Visibles: la mano 10,6 y el As del dealer.
+    shoe[9] -= 1;
+    shoe[5] -= 1;
+    shoe[0] -= 1;
+    let req = crate::AnalyzeHandRequest {
+        version: 1,
+        rules: rules.clone(),
+        shoe,
+        hand: vec![Rank::TEN, Rank::new(5).unwrap()],
+        dealer_up: Rank::ACE,
+        split_hands_so_far: 0,
+        is_split_aces: false,
+        allowed: Default::default(),
+    };
+    let res = crate::analyze_hand(req.clone()).unwrap();
+    let p = 95.0 / 309.0;
+    assert!((res.insurance_ev.unwrap() - (3.0 * p - 1.0)).abs() < 1e-12);
+    // Sin As visible no hay seguro.
+    let res = crate::analyze_hand(crate::AnalyzeHandRequest {
+        dealer_up: Rank::TEN,
+        shoe: {
+            let mut s = req.shoe;
+            s[0] += 1;
+            s[9] -= 1;
+            s
+        },
+        ..req
+    })
+    .unwrap();
+    assert_eq!(res.insurance_ev, None);
 }

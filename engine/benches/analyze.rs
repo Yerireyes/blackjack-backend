@@ -25,6 +25,8 @@ fn request(decks: u8, hand: &[Rank], up: Rank) -> AnalyzeHandRequest {
 
 fn bench(c: &mut Criterion) {
     let r = |i| Rank::new(i).unwrap();
+    // En frío, como cada llamada antes de la caché: los tiempos siguen siendo comparables.
+    engine::cache::set_enabled(false);
     for decks in [1u8, 2, 6, 8] {
         // Mano dura baja: la recursión de pedir más profunda.
         let req = request(decks, &[r(1), r(2)], r(1));
@@ -36,6 +38,23 @@ fn bench(c: &mut Criterion) {
             b.iter(|| analyze_hand(black_box(req.clone())).unwrap())
         });
     }
+
+    // Con la caché: la decisión siguiente a pedir (10,2 vs 10 → 10,2,3), después de haber
+    // analizado la primera, como en una mano del front (las repeticiones también salen
+    // de la caché).
+    engine::cache::set_enabled(true);
+    let first = request(6, &[r(9), r(1)], r(9));
+    let mut next = first.clone();
+    next.hand.push(r(2));
+    next.shoe[2] -= 1;
+    analyze_hand(first).unwrap();
+    c.bench_function("cached_next_decision_6d", |b| {
+        b.iter(|| analyze_hand(black_box(next.clone())).unwrap())
+    });
+    engine::cache::set_enabled(false);
+    c.bench_function("cold_next_decision_6d", |b| {
+        b.iter(|| analyze_hand(black_box(next.clone())).unwrap())
+    });
 }
 
 criterion_group! {

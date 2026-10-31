@@ -68,7 +68,11 @@ pub struct SeatRoundView {
     pub active: u32,
     /// Ya no decide en esta ronda.
     pub done: bool,
-    /// Neto del asiento en fichas (solo liquidada).
+    /// Seguro: `true`/`false` una vez decidido; falta si no se ofreció o está pendiente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub insured: Option<bool>,
+    /// Neto del asiento en fichas, seguro incluido (solo liquidada).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub net: Option<i64>,
@@ -123,6 +127,10 @@ pub struct AllowedActions {
     pub double: bool,
     pub split: bool,
     pub surrender: bool,
+    /// En la fase `insurance`: las fichas alcanzan para el seguro (media apuesta).
+    /// Rechazarlo siempre se puede en esa fase.
+    #[serde(default)]
+    pub insurance: bool,
 }
 
 impl AllowedActions {
@@ -143,6 +151,8 @@ impl AllowedActions {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 pub enum RoundPhase {
+    /// Con As visible, antes del peek: el jugador decide si toma el seguro.
+    Insurance,
     Player,
     Settled,
 }
@@ -195,6 +205,10 @@ pub struct RoundResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", tsify(optional))]
     pub review: Option<Vec<ReviewItem>>,
+    /// Neto del seguro en fichas, ya sumado a `net` (si se tomó).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub insurance_net: Option<i64>,
     /// Logros desbloqueados con esta ronda (falta si no hubo ninguno).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", tsify(optional))]
@@ -303,6 +317,10 @@ pub struct RoundView {
     pub allowed: AllowedActions,
     /// El dealer tenía blackjack al revisar la oculta: la ronda terminó en el reparto.
     pub peek_blackjack: bool,
+    /// Seguro: `true`/`false` una vez decidido; falta si no se ofreció o está pendiente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", tsify(optional))]
+    pub insured: Option<bool>,
     pub wallet: WalletView,
     /// Solo casual: composición restante por rango (0 = As … 9 = diez), con la
     /// oculta contada como no vista.
@@ -339,6 +357,15 @@ pub struct NewRoundRequest {
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 pub struct RoundActionRequest {
     pub action: Action,
+    pub idempotency_key: String,
+}
+
+/// `POST /play/rounds/{id}/insurance`: tomar (`take: true`) o rechazar el seguro.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+pub struct InsuranceRequest {
+    pub take: bool,
     pub idempotency_key: String,
 }
 
@@ -942,6 +969,10 @@ pub enum ClientMessage {
     },
     /// Con menos de 10, volver a 500.
     Rebuy,
+    /// En la fase `insurance` de la ronda: tomar o rechazar el seguro.
+    Insurance {
+        take: bool,
+    },
     React {
         reaction: Reaction,
     },
@@ -959,6 +990,9 @@ pub enum ClientMessage {
     rename_all_fields = "camelCase"
 )]
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+// `State` lleva la sala entera y las demás variantes son chicas: es un mensaje que solo se
+// serializa, así que no vale la pena boxearlo.
+#[allow(clippy::large_enum_variant)]
 pub enum ServerMessage {
     /// Al conectar: quién es el usuario en la sala.
     Welcome {

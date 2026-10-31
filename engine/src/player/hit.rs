@@ -61,9 +61,11 @@ impl Solver {
     /// Probabilidad de pasarse con la próxima carta.
     pub fn p_bust_on_hit(&self, shoe: &Shoe, hand: Hand) -> f64 {
         let p = next_card_probs(shoe, self.forbidden);
-        Rank::all()
+        let bust: f64 = Rank::all()
             .filter(|&r| hand.with_card(r).is_bust())
             .map(|r| p[r.index()])
-            .sum()
+            .sum();
+        // Con 21 duro se pasan todas las cartas y la suma puede dar 1 + ε por redondeo.
+        bust.clamp(0.0, 1.0)
     }
 }

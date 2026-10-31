@@ -76,6 +76,11 @@ impl DealerSolver {
         self.forbidden
     }
 
+    /// Nodos memoizados.
+    pub fn memo_len(&self) -> usize {
+        self.memo_play.len() + self.memo_dist.len()
+    }
+
     /// ¿El dealer se planta con esta mano?
     pub fn stands(&self, hand: Hand) -> bool {
         let t = hand.total();
