@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +28,8 @@ pub struct AppState {
     /// Salas multijugador (en memoria).
     pub rooms: Arc<Rooms>,
     pub metrics: Arc<Metrics>,
+    /// Emails de los administradores, en minúsculas (`ADMIN_EMAILS`).
+    pub admin_emails: Arc<HashSet<String>>,
 }
 
 /// Cliente OAuth de Google con su cliente HTTP.
@@ -36,6 +39,10 @@ pub struct Google {
 }
 
 impl AppState {
+    pub fn is_admin(&self, email: &str) -> bool {
+        self.admin_emails.contains(&email.to_lowercase())
+    }
+
     pub fn new(pool: PgPool, cfg: &Config) -> AppState {
         let google = cfg.google.clone().map(|config| {
             let http = reqwest::Client::builder()
@@ -72,6 +79,7 @@ impl AppState {
             daily_seed,
             rooms,
             metrics: Arc::new(Metrics::new(cfg.metrics_token.clone())),
+            admin_emails: Arc::new(cfg.admin_emails.iter().cloned().collect()),
         }
     }
 }

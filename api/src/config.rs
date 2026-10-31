@@ -32,6 +32,8 @@ pub struct Config {
     pub daily_seed_secret: Option<Vec<u8>>,
     /// Token para `GET /metrics` (`METRICS_TOKEN`). Sin él, las métricas no se sirven.
     pub metrics_token: Option<String>,
+    /// Emails de los administradores (`ADMIN_EMAILS`, separados por comas), en minúsculas.
+    pub admin_emails: Vec<String>,
 }
 
 /// Cliente OAuth de Google. Las URLs de Google se pueden cambiar para los tests.
@@ -137,6 +139,14 @@ impl Config {
             google: GoogleConfig::from_env()?,
             daily_seed_secret,
             metrics_token,
+            admin_emails: var_opt("ADMIN_EMAILS")
+                .map(|v| {
+                    v.split(',')
+                        .map(|e| e.trim().to_lowercase())
+                        .filter(|e| !e.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         cfg.check_origin()?;
         Ok(cfg)
@@ -186,6 +196,7 @@ mod tests {
             google: None,
             daily_seed_secret: None,
             metrics_token: None,
+            admin_emails: Vec::new(),
         }
     }
 

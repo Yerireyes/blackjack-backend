@@ -37,6 +37,7 @@ fn config() -> Config {
         google: None,
         daily_seed_secret: None,
         metrics_token: None,
+        admin_emails: vec!["admin@example.com".into()],
     }
 }
 

@@ -53,6 +53,8 @@ pub struct MeDto {
     pub providers: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Su email está en `ADMIN_EMAILS`: el front muestra el panel de moderación.
+    pub is_admin: bool,
 }
 
 #[derive(Serialize)]
@@ -145,7 +147,8 @@ pub async fn load_me<'e>(db: impl PgExecutor<'e>, id: Uuid) -> ApiResult<Option<
                   u.password_hash IS NOT NULL AS "has_password!",
                   COALESCE(array_agg(i.provider ORDER BY i.provider)
                            FILTER (WHERE i.provider IS NOT NULL), '{}') AS "providers!",
-                  u.created_at
+                  u.created_at,
+                  false AS "is_admin!"
            FROM users u LEFT JOIN identities i ON i.user_id = u.id
            WHERE u.id = $1
            GROUP BY u.id"#,
@@ -196,7 +199,9 @@ pub async fn register(
         has_password: true,
         providers: Vec::new(),
         created_at: user.created_at,
+        is_admin: false,
     };
+    let me = with_admin(&state, me);
     Ok((StatusCode::CREATED, jar, Json(me)))
 }
 
@@ -232,7 +237,13 @@ pub async fn login(
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     let jar = jar.add(start_session(&state, id, &headers).await?);
-    Ok((jar, Json(me)))
+    Ok((jar, Json(with_admin(&state, me))))
+}
+
+/// Completa `isAdmin` con `ADMIN_EMAILS` (no se guarda en la base).
+pub fn with_admin(state: &AppState, mut me: MeDto) -> MeDto {
+    me.is_admin = state.is_admin(&me.email);
+    me
 }
 
 /// Revoca la sesión actual: el token deja de valer aunque alguien lo haya copiado.
@@ -266,7 +277,7 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
     let me = load_me(&state.pool, user.id)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
-    Ok(Json(me))
+    Ok(Json(with_admin(&state, me)))
 }
 
 /// Qué formas de login externas están habilitadas (el front oculta las demás).

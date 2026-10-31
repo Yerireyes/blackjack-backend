@@ -6,6 +6,7 @@ pub mod cosmetics;
 pub mod daily;
 pub mod friends;
 pub mod google;
+pub mod moderation;
 pub mod play;
 pub mod ranked;
 pub mod sessions;

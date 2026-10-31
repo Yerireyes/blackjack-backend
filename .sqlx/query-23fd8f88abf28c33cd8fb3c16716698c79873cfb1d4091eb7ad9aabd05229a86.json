@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT u.id, u.email, u.display_name,\n                  NOT u.display_name_set AS \"needs_display_name!\",\n                  u.password_hash IS NOT NULL AS \"has_password!\",\n                  COALESCE(array_agg(i.provider ORDER BY i.provider)\n                           FILTER (WHERE i.provider IS NOT NULL), '{}') AS \"providers!\",\n                  u.created_at\n           FROM users u LEFT JOIN identities i ON i.user_id = u.id\n           WHERE u.id = $1\n           GROUP BY u.id",
+  "query": "SELECT u.id, u.email, u.display_name,\n                  NOT u.display_name_set AS \"needs_display_name!\",\n                  u.password_hash IS NOT NULL AS \"has_password!\",\n                  COALESCE(array_agg(i.provider ORDER BY i.provider)\n                           FILTER (WHERE i.provider IS NOT NULL), '{}') AS \"providers!\",\n                  u.created_at,\n                  false AS \"is_admin!\"\n           FROM users u LEFT JOIN identities i ON i.user_id = u.id\n           WHERE u.id = $1\n           GROUP BY u.id",
   "describe": {
     "columns": [
       {
@@ -64,6 +64,12 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "is_admin!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -78,8 +84,9 @@
       null,
       null,
       null,
-      false
+      false,
+      null
     ]
   },
-  "hash": "d2dc0f62ef2a05169366cb63dd1793e536dd689288795ad2ac8b44e514502887"
+  "hash": "23fd8f88abf28c33cd8fb3c16716698c79873cfb1d4091eb7ad9aabd05229a86"
 }

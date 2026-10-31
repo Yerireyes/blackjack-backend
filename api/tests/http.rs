@@ -40,6 +40,7 @@ fn config(analyze_burst: u32) -> Config {
         google: None,
         daily_seed_secret: None,
         metrics_token: None,
+        admin_emails: vec!["admin@example.com".into()],
     }
 }
 
@@ -593,6 +594,7 @@ async fn display_names(pool: PgPool) {
             "email",
             "hasPassword",
             "id",
+            "isAdmin",
             "needsDisplayName",
             "providers"
         ]
@@ -2603,4 +2605,182 @@ async fn history_and_stats(pool: PgPool) {
 
 fn review_len(item: &Value) -> usize {
     item["review"].as_array().map_or(0, |r| r.len())
+}
+
+// ---- Moderación ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn moderation(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    // admin@example.com está en ADMIN_EMAILS de la configuración de los tests.
+    let admin = register_named(&app, "admin@example.com", "Revisora")
+        .await
+        .cookie
+        .unwrap();
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    let me = send(&app, "GET", "/api/v1/auth/me", None, Some(&admin))
+        .await
+        .body;
+    assert_eq!(me["isAdmin"], true);
+    let me = send(&app, "GET", "/api/v1/auth/me", None, Some(&beto))
+        .await
+        .body;
+    assert_eq!(me["isAdmin"], false);
+    let beto_id = me["id"].as_str().unwrap().to_string();
+    // Una partida de Beto para verlo salir del ranking al suspenderlo.
+    let run = new_run(&app, &beto, "vegas").await;
+    set_run(&pool, &run, "peak = 900").await;
+
+    // Reportes.
+    let report = |name: &str, reason: &str| json!({ "displayName": name, "reason": reason });
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/reports",
+        Some(report("BETO", "name")),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED);
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/reports",
+        Some(report("beto", "cheating")),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(
+        (res.status, &res.body["code"]),
+        (StatusCode::CONFLICT, &json!("report_exists"))
+    );
+    for (body, status) in [
+        (report("beto", "feo"), StatusCode::BAD_REQUEST),
+        (report("ana", "name"), StatusCode::BAD_REQUEST),
+        (report("nadie", "name"), StatusCode::NOT_FOUND),
+    ] {
+        let res = send(&app, "POST", "/api/v1/reports", Some(body), Some(&ana)).await;
+        assert_eq!(res.status, status, "{}", res.body);
+    }
+
+    // Solo administradores.
+    let res = send(&app, "GET", "/api/v1/admin/reports", None, Some(&ana)).await;
+    assert_eq!(
+        (res.status, &res.body["code"]),
+        (StatusCode::FORBIDDEN, &json!("not_admin"))
+    );
+    let res = send(&app, "GET", "/api/v1/admin/reports", None, Some(&admin)).await;
+    assert_eq!(res.body.as_array().unwrap().len(), 1);
+    assert_eq!(res.body[0]["target"]["displayName"], "beto");
+    assert_eq!(res.body[0]["reason"], "name");
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/admin/users?name=BE",
+        None,
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(res.body[0]["email"], "beto@example.com");
+    assert_eq!(res.body[0]["openReports"], 1);
+
+    // Cambio de nombre forzado: queda provisional y se cierran sus reportes.
+    let uri = |action: &str| format!("/api/v1/admin/users/{beto_id}/{action}");
+    let res = send(&app, "POST", &uri("rename"), None, Some(&admin)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let new_name = res.body["displayName"].as_str().unwrap().to_string();
+    assert!(new_name.starts_with("Jugador"), "{new_name}");
+    let me = send(&app, "GET", "/api/v1/auth/me", None, Some(&beto))
+        .await
+        .body;
+    assert_eq!(
+        (&me["displayName"], &me["needsDisplayName"]),
+        (&json!(new_name), &json!(true))
+    );
+    let res = send(&app, "GET", "/api/v1/admin/reports", None, Some(&admin)).await;
+    assert_eq!(res.body, json!([]));
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/admin/reports?status=resolved",
+        None,
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(res.body[0]["action"], "rename");
+
+    // Suspensión: pierde las sesiones, no entra y sale del ranking.
+    let weekly = "/api/v1/casual/leaderboard/weekly";
+    let res = send(&app, "GET", weekly, None, None).await;
+    assert_eq!(res.body["top"].as_array().unwrap().len(), 1);
+    let ban = json!({ "reason": "trampas" });
+    let res = send(&app, "POST", &uri("ban"), Some(ban.clone()), Some(&admin)).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let res = send(&app, "GET", "/api/v1/auth/me", None, Some(&beto)).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({ "email": "beto@example.com", "password": "contraseña-segura" })),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (res.status, &res.body["code"]),
+        (StatusCode::FORBIDDEN, &json!("account_banned"))
+    );
+    let res = send(&app, "GET", weekly, None, None).await;
+    assert_eq!(res.body["top"], json!([]));
+    let admin_id = send(&app, "GET", "/api/v1/auth/me", None, Some(&admin))
+        .await
+        .body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = send(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/users/{admin_id}/ban"),
+        Some(ban),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(res.body["code"], "cannot_ban_admin");
+
+    // Se levanta la suspensión y vuelve a entrar.
+    let res = send(&app, "POST", &uri("unban"), None, Some(&admin)).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    login(&app, "beto@example.com").await;
+
+    // Descartar un reporte.
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/reports",
+        Some(report(&new_name, "other")),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED);
+    let id = send(&app, "GET", "/api/v1/admin/reports", None, Some(&admin))
+        .await
+        .body[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dismiss = format!("/api/v1/admin/reports/{id}/dismiss");
+    assert_eq!(
+        send(&app, "POST", &dismiss, None, Some(&admin))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&app, "POST", &dismiss, None, Some(&admin))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }

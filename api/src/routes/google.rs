@@ -224,7 +224,7 @@ pub async fn unlink(
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
-    Ok(Json(me))
+    Ok(Json(crate::routes::auth::with_admin(&state, me)))
 }
 
 pub async fn start(
@@ -306,6 +306,9 @@ pub async fn callback(
     match finish(&state, query, &session, pending).await {
         Ok(Some(user_id)) => match start_session(&state, user_id, &headers).await {
             Ok(cookie) => (jar, session.add(cookie), front(&state, mode, Ok(()))),
+            Err(e) if e.code == "account_banned" => {
+                (jar, session, front(&state, mode, Err("account_banned")))
+            }
             Err(_) => (jar, session, front(&state, mode, Err("internal"))),
         },
         Ok(None) => (jar, session, front(&state, mode, Ok(()))),

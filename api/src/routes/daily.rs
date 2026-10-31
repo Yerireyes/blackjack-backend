@@ -351,6 +351,7 @@ pub async fn leaderboard(
                FROM daily_attempts d JOIN users u ON u.id = d.user_id
                LEFT JOIN user_cosmetics c ON c.user_id = d.user_id
                WHERE d.day = $1 AND d.status = 'finished'
+                 AND u.banned_at IS NULL
                  AND ($2::uuid[] IS NULL OR d.user_id = ANY($2))
            )
            SELECT user_id, balance, hands, display_name, title AS "title?", pos AS "pos!"
