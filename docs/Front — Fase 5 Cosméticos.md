@@ -42,7 +42,7 @@ Devuelve `CosmeticItem[]` en orden: `{ id, slot, unlockedBy? }`. `unlockedBy` es
 | `felt` | `feltGreen` | `feltBlue` (`dailyComplete`), `feltRed` (`doubleUp`), `feltBlack` (`rankedMedal`) | Paño verde clásico; azul; rojo; negro |
 | `cardBack` | `backClassic` | `backGold` (`blackjack`), `backMidnight` (`perfectSplit`) | Dorso clásico; dorado; azul medianoche |
 | `chips` | `chipsClassic` | `chipsNeon` (`sixToFiveSurvivor`), `chipsGold` (`rankedQualified`) | Fichas clásicas; neón; doradas |
-| `title` | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`) | «Novato», «Cabeza fría», «De libro», «Medallista» |
+| `title` | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`), `titleChampion` (`tournamentWin`) | «Novato», «Cabeza fría», «De libro», «Medallista», «Campeón» |
 
 Los nombres, colores e imágenes los pone el front. Si llega un id que no conoce, ignorarlo.
 

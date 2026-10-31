@@ -41,6 +41,7 @@ el icono**. Textos sugeridos:
 | `rankedQualified` | Clasificado | Juega 200 manos en una temporada ranked. |
 | `rankedMedal` | Medallista | Termina una temporada ranked con medalla. |
 | `dailyComplete` | Reto cumplido | Juega las 30 manos del reto diario. |
+| `tournamentWin` | Campeón | Gana un torneo en una sala. |
 
 Si llega un id que el front no conoce (un logro nuevo del backend), ignorarlo o mostrarlo
 genérico; no romper.

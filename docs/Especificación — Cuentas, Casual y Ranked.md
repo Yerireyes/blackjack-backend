@@ -548,6 +548,7 @@ Migración `api/migrations/20261101000001_achievements.sql`; lógica en
   | `rankedQualified` | Llegar a 200 manos en una temporada ranked |
   | `rankedMedal` | Recibir medalla al cerrar una temporada ranked |
   | `dailyComplete` | Jugar las 30 manos del reto diario |
+  | `tournamentWin` | Ganar un torneo en una sala (se otorga al terminar el torneo) |
 
 - **Cuándo.** Al liquidar cada ronda, dentro de la misma transacción (también si la liquida
   el cierre de rondas abandonadas). Los nuevos vienen en `result.unlocked` y quedan en la
@@ -574,7 +575,7 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
   | Paño | `feltGreen` | `feltBlue` (`dailyComplete`), `feltRed` (`doubleUp`), `feltBlack` (`rankedMedal`) |
   | Dorso | `backClassic` | `backGold` (`blackjack`), `backMidnight` (`perfectSplit`) |
   | Fichas | `chipsClassic` | `chipsNeon` (`sixToFiveSurvivor`), `chipsGold` (`rankedQualified`) |
-  | Título | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`) |
+  | Título | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`), `titleChampion` (`tournamentWin`) |
 
   Todo logro desbloquea al menos un cosmético (test).
 - **Lo que tiene** se deriva de sus logros cada vez; no se guarda. Así un cosmético nuevo

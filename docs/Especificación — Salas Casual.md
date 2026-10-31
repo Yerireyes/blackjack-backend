@@ -121,6 +121,28 @@ Ciclo de la mesa:
   oculta contada como no vista), igual que Casual, y el front calcula EV y recomendaciones con
   su motor WASM. Sin ayudas no viene.
 
+## 5.1 Torneos
+
+Una sala se crea **de torneo** con `tournament: { hands }` (5–30 manos). En ella solo se
+juegan torneos:
+
+- Sentarse no abre apuestas: la sala espera en `waiting` hasta que el **anfitrión** manda
+  `startTournament` con 2 o más jugadores sentados.
+- Al empezar, cada sentado recibe **500 fichas de torneo** (aparte de su pila de la sala).
+  Mientras corre, nadie más se puede sentar (`tournament_running`) y no hay recompras
+  (`tournament_no_rebuy`). Quien se levanta o se queda sin fichas para la mínima queda
+  fuera (`out`).
+- Cada cierre de apuestas cuenta como una mano jugada, aunque alguien no apueste: así el
+  torneo siempre termina. Termina al jugar las N manos o cuando queda uno solo (o nadie)
+  con fichas sentado.
+- **Gana la pila más alta** (en empate, el primero por nombre). El ganador recibe el logro
+  `tournamentWin`, que desbloquea el título `titleChampion`: es lo único que una sala
+  escribe en la base.
+- Al terminar, la sala vuelve a `waiting` con la clasificación final a la vista; el
+  anfitrión puede iniciar otro.
+- En una sala de torneo el `leaderboard` interno va vacío: manda `tournament.standings`.
+- La inactividad (3 rondas sin apostar) no saca a nadie del asiento en las salas de torneo.
+
 ## 6. Ranking interno
 
 Por usuario que se sentó alguna vez en la sala: **neto** = pila actual − 500 × compras,
