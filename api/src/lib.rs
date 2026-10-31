@@ -111,6 +111,7 @@ async fn not_found() -> ApiError {
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
     use routes::{
         achievements, analyze, auth, casual, cosmetics, daily, google, play, ranked, sessions,
+        stats,
     };
 
     let analyze_routes = Router::new()
@@ -147,6 +148,8 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         )
         .route("/me/records", get(casual::records))
         .route("/me/achievements", get(achievements::mine))
+        .route("/me/history", get(stats::history))
+        .route("/me/stats", get(stats::stats))
         .route("/cosmetics", get(cosmetics::catalog))
         .route("/rooms", get(rooms::list))
         .route("/rooms/{code}", get(rooms::get))

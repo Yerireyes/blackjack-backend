@@ -2488,3 +2488,119 @@ async fn metrics_need_their_token(pool: PgPool) {
 fn app_with(pool: PgPool, cfg: &Config) -> Router {
     app(AppState::new(pool, cfg), cfg, &RateLimits::new(cfg))
 }
+
+// ---- Historial y estadísticas ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn history_and_stats(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let res = send(&app, "GET", "/api/v1/me/stats", None, Some(&ana)).await;
+    assert_eq!(res.body["modes"], json!([]));
+    assert_eq!(res.body["decisions"]["decisions"], 0);
+
+    // Casual: pierde 20 (17 contra 20), gana 20 (19 contra 16 que se pasa) y blackjack (+15).
+    let run = new_run(&app, &ana, "vegas").await;
+    for (top, bet) in [
+        (vec![Ten, Ten, Seven, Ten], 20),
+        (vec![Ten, Nine, Nine, Seven, Ten], 20),
+        (vec![Ace, Nine, K, Seven], 10),
+    ] {
+        stack(&pool, &run, 6, &top).await;
+        let res = deal_round(&app, &ana, bet, &key()).await;
+        if res.body["phase"] == "player" {
+            let round = res.body["id"].as_str().unwrap().to_string();
+            act(&app, &ana, &round, "stand", &key()).await;
+        }
+    }
+    // Ranked: pedir con 17 contra 10 es un error (lo óptimo es plantarse).
+    let acc = ranked_me(&app, &ana).await;
+    stack_account(&pool, &acc, &[Ten, Ten, Seven, Ten]).await;
+    let round = ranked_deal(&app, &ana, 10).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    if res.body["phase"] == "player" {
+        act(&app, &ana, &round, "stand", &key()).await;
+    }
+
+    // Historial: de la más reciente a la más antigua, de a 2.
+    let uri = "/api/v1/me/history";
+    let page = send(&app, "GET", &format!("{uri}?limit=2"), None, Some(&ana))
+        .await
+        .body;
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["kind"], "ranked");
+    assert_eq!(items[1]["net"], 15);
+    assert!(
+        items[1]["dealer"]["hole"].is_object(),
+        "con la oculta revelada"
+    );
+    assert!(items[1].get("review").is_none(), "Casual no se revisa");
+    let review = &items[0]["review"][0];
+    assert_eq!(
+        (&review["chosen"], &review["best"]),
+        (&json!("hit"), &json!("stand"))
+    );
+    assert_eq!(
+        review["spot"],
+        json!({ "kind": "hard", "total": 17, "dealerUp": 9 })
+    );
+    let before = page["nextBefore"].as_str().unwrap();
+    let page = send(
+        &app,
+        "GET",
+        &format!("{uri}?limit=2&before={before}"),
+        None,
+        Some(&ana),
+    )
+    .await
+    .body;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| &i["net"])
+            .collect::<Vec<_>>(),
+        [&json!(20), &json!(-20)]
+    );
+    assert!(page.get("nextBefore").is_none());
+    let res = send(&app, "GET", &format!("{uri}?kind=ranked"), None, Some(&ana)).await;
+    assert_eq!(res.body["items"].as_array().unwrap().len(), 1);
+    for bad in ["?kind=salas", "?limit=0", "?limit=51", "?before=ayer"] {
+        let res = send(&app, "GET", &format!("{uri}{bad}"), None, Some(&ana)).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    // Estadísticas.
+    let stats = send(&app, "GET", "/api/v1/me/stats", None, Some(&ana))
+        .await
+        .body;
+    assert_eq!(
+        stats["modes"][0],
+        json!({ "kind": "casual", "rounds": 3, "net": 15, "wins": 2, "pushes": 0,
+                "losses": 1, "blackjacks": 1, "bestWin": 20, "worstLoss": -20 })
+    );
+    assert_eq!(stats["modes"][1]["kind"], "ranked");
+    let d = &stats["decisions"];
+    // Pedir con 17 fue el error; si después se plantó, eso sí fue lo óptimo.
+    let n = review_len(&items[0]);
+    assert_eq!((&d["decisions"], &d["optimal"]), (&json!(n), &json!(n - 1)));
+    assert!(d["evLost"].as_f64().unwrap() > 0.0);
+    assert_eq!(d["byKind"][0]["kind"], "hard");
+    assert_eq!(
+        d["weakSpots"][0]["spot"],
+        json!({ "kind": "hard", "total": 17, "dealerUp": 9 })
+    );
+    // Sin sesión, nada.
+    let res = send(&app, "GET", "/api/v1/me/stats", None, None).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+}
+
+fn review_len(item: &Value) -> usize {
+    item["review"].as_array().map_or(0, |r| r.len())
+}
