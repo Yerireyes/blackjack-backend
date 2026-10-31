@@ -32,6 +32,11 @@ assert.equal(hand.dealer.pBlackjack, 0);
 assert.ok(hand.computeMs >= 0);
 console.log("analyzeHand 10,6 vs 10:", hand.best, hand.actions.map((a) => `${a.action}=${a.ev.toFixed(5)}`).join(" "), `(${hand.computeMs} ms)`);
 
+// En WASM la caché entre llamadas está encendida: la misma pregunta da lo mismo y más rápido.
+const again = mod.analyzeHand({ version: 3, rules, shoe, hand: [9, 5], dealerUp: 9 });
+assert.deepEqual({ ...again, computeMs: 0 }, { ...hand, computeMs: 0 });
+console.log(`analyzeHand repetido (caché): ${again.computeMs} ms`);
+
 const dealer = mod.analyzeDealer({ version: 1, rules, shoe: [24, 24, 24, 24, 24, 23, 24, 24, 24, 96], up: 5 });
 assert.ok(Math.abs(dealer.dealer.pBust - 0.422842) < 1e-6);
 console.log("analyzeDealer 6D S17 visible 6: pBust =", dealer.dealer.pBust.toFixed(6));
