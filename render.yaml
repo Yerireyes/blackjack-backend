@@ -1,0 +1,44 @@
+# Blueprint de Render (Dashboard → New → Blueprint, elegir este repo). Un solo servicio web
+# gratuito con la imagen que publica .github/workflows/deploy.yml: sirve el front y la API en
+# el mismo origen. La base va aparte (Neon, gratis y sin vencimiento): ver el README,
+# «Despliegue en la nube».
+services:
+  - type: web
+    name: blackjack
+    runtime: image
+    image:
+      url: ghcr.io/yerireyes/blackjack:latest
+      # Si el paquete de GHCR es privado, crear en Render una credencial de registro (usuario
+      # de GitHub + token con read:packages) y descomentar:
+      # creds:
+      #   fromRegistryCreds:
+      #     name: ghcr
+    plan: free
+    region: virginia
+    healthCheckPath: /api/v1/health
+    # Lo despliega el workflow con el Deploy Hook, ya con la imagen nueva publicada.
+    autoDeploy: false
+    envVars:
+      # postgres://usuario:clave@ep-....neon.tech/neondb?sslmode=require (la conexión
+      # directa, sin -pooler).
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DAILY_SEED_SECRET
+        generateValue: true
+      # https://blackjack-xxxx.onrender.com (la URL del servicio, sin barra final).
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      # El proxy de Render conecta desde su red interna y agrega la IP real del cliente al
+      # final de X-Forwarded-For.
+      - key: TRUSTED_PROXIES
+        value: 10.0.0.0/8
+      # Tu email, para el panel de moderación.
+      - key: ADMIN_EMAILS
+        sync: false
+      # La instancia gratuita tiene 0,1 vCPU y 512 MB.
+      - key: MAX_ROOMS
+        value: "50"
