@@ -102,6 +102,9 @@ Ciclo de la mesa:
 3. **Reparto:** como en el casino, una carta a cada asiento en orden, la visible del dealer,
    la segunda carta a cada asiento y la oculta. Con peek y blackjack del dealer la ronda
    termina en el reparto.
+   - **Seguro:** con un As visible, antes del peek, todos los asientos deciden a la vez si
+     toman el seguro (media apuesta, paga 2:1) con `insurance { take }`. Hay 20 s; quien no
+     decide no lo toma. Cuando decidieron todos, sigue el peek y los turnos.
 4. **Turnos (20 s cada decisión):** asiento por asiento, de izquierda a derecha (1 → 7). Cada
    jugador decide con las acciones de `allowed`. Al vencer el tiempo, el servidor se planta.
    Un blackjack natural no juega.

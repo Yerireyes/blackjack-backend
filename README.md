@@ -228,7 +228,10 @@ const res = analyzeHand({ version: 1, rules, shoe, hand: [9, 5], dealerUp: 9 });
 - **Zapato mínimo**: suma de valores ≥ 60, así la recursión nunca se queda sin cartas.
 - **Empates de EV**: gana la acción que va primero (plantarse, pedir, doblar, dividir,
   rendirse).
-- **Seguro**: no implementado (opcional en el diseño).
+- **Seguro**: con un As visible, `analyzeHand` trae `insuranceEv` = `3p − 1` por ficha
+  puesta en el seguro (`p` = probabilidad de que la oculta valga 10, con la oculta contada
+  como no vista). Solo es positivo con muchos dieces en el zapato. En las mesas del
+  servidor el seguro se ofrece antes del peek (fase `insurance`).
 
 ### Dividir (fase 9)
 
@@ -459,7 +462,7 @@ mazos tarda ~1–2 ms.
 
 - Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
   óptimas no cuenta Casual (sección 8.1).
-- Seguro (`insuranceEv`) y caché LRU entre llamadas en el worker.
+- Caché LRU entre llamadas en el worker.
 - CI: comparar benchmarks entre ramas (avisar si algo empeora más de un 20 %). Las máquinas
   de GitHub dan tiempos muy variables, así que hace falta un runner fijo o muchas
   repeticiones para que sea confiable.

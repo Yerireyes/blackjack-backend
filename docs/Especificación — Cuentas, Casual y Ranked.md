@@ -580,6 +580,25 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
   `RankedRow`, `DailyRow`) traen `title` con el título equipado, si hay uno. Es el que lleva
   puesto ahora, no el que tenía cuando jugó.
 
+### 8.6 Seguro (todas las mesas del servidor)
+
+- **Cuándo:** con un As visible, después del reparto y **antes del peek**. La ronda queda en
+  la fase `insurance`: no hay más acciones hasta decidir, y la oculta sigue sin verse.
+- **Cuánto:** media apuesta (las apuestas son múltiplos de 10, así que siempre es entero).
+  Paga 2:1 si el dealer tiene blackjack; si no, se pierde. Hacen falta fichas libres para la
+  media apuesta (`allowed.insurance`); rechazarlo siempre se puede.
+- **Dinero par:** con blackjack, tomar el seguro asegura +1 apuesta haya o no blackjack del
+  dealer. Es el mismo seguro; el front lo puede llamar «dinero par».
+- **Sin peek** (preset Europa): también se ofrece; se resuelve al final, cuando el dealer
+  revela.
+- **Rondas individuales:** `POST /play/rounds/{id}/insurance` `{ take, idempotencyKey }`,
+  con la misma idempotencia que las acciones. `RoundView.insured` dice qué se decidió y
+  `result.insuranceNet` es el neto del seguro, ya sumado a `result.net`. La ronda abandonada
+  24 h lo rechaza sola.
+- **Revisión (Ranked y reto diario):** la decisión del seguro no entra en `review`. El EV
+  está en `analyze_hand` (`insuranceEv`) para quien quiera mostrarlo en las ayudas.
+- **Salas:** ver «Especificación — Salas Casual.md», sección 5.
+
 ---
 
 ## 9. Seguridad: lista de control
