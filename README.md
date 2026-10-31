@@ -458,11 +458,19 @@ Medido con `cargo bench` en la máquina de desarrollo: `analyze_hand` sin dividi
 gracias al presupuesto del exacto (objetivo < 500 ms). En WASM, 10,6 vs 10 con 6
 mazos tarda ~1–2 ms.
 
+**Caché entre llamadas** ([`engine/src/cache.rs`](engine/src/cache.rs)): el motor conserva
+los `Solver` (con su memoización) entre llamadas, uno por reglas y carta visible, con
+reemplazo LRU entre 10 y un tope de 600 mil nodos (~50 MB) entre todos. Como la memoización
+usa como clave el zapato exacto, los resultados son idénticos bit a bit (test
+`engine/tests/cache.rs`). La decisión siguiente a pedir pasa de ~67 µs a ~0,3 µs, y repetir
+una pregunta pesada (un re-render) sale gratis. Encendida solo en WASM (el Web Worker): en
+la API cada hilo bloqueante tendría la suya, así que ahí queda apagada. Los benchmarks la
+apagan para medir en frío, salvo `cached_next_decision_6d`.
+
 ## Pendiente
 
 - Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
   óptimas no cuenta Casual (sección 8.1).
-- Caché LRU entre llamadas en el worker.
 - CI: comparar benchmarks entre ramas (avisar si algo empeora más de un 20 %). Las máquinas
   de GitHub dan tiempos muy variables, así que hace falta un runner fijo o muchas
   repeticiones para que sea confiable.
