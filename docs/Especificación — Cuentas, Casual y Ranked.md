@@ -139,6 +139,7 @@ interface Me {
   needsDisplayName: boolean; hasPassword: boolean;
   providers: string[];   // proveedores vinculados: ["google"]
   createdAt: string;
+  isAdmin: boolean;      // su email está en ADMIN_EMAILS (sección 8.9)
 }
 ```
 
@@ -645,6 +646,31 @@ Migración `api/migrations/20261104000001_friends.sql`; rutas en `api/src/routes
 - **Reto entre amigos:** `GET /daily/leaderboard?scope=friends` cuenta las posiciones solo
   entre el usuario y sus amigos (necesita sesión).
 
+### 8.9 Moderación
+
+Migración `api/migrations/20261105000001_moderation.sql`; rutas en
+`api/src/routes/moderation.rs`.
+
+- **Administradores:** los emails de `ADMIN_EMAILS` (separados por comas). No se guarda en
+  la base, así que nadie se vuelve administrador desde la API. `Me.isAdmin` le dice al
+  front si mostrar el panel. Las rutas `/admin/*` responden 403 `not_admin` a los demás.
+- **Reportes** (`POST /reports` `{ displayName, reason, details? }`): motivo `name`,
+  `behavior`, `cheating` u `other`; detalle de hasta 300 caracteres. Un solo reporte
+  abierto de cada persona sobre otra (`report_exists`).
+- **Acciones del administrador:**
+  - Ver reportes abiertos o resueltos (los últimos 200) y buscar usuarios por el comienzo
+    del nombre (con email, suspensión y reportes abiertos).
+  - **Descartar** un reporte.
+  - **Cambiar el nombre:** pasa a uno provisional (`JugadorNNNN`) y el usuario tiene que
+    elegir otro (`needsDisplayName`), como al crear la cuenta con Google.
+  - **Suspender** (`{ reason }`): revoca todas sus sesiones; no puede iniciar sesión (403
+    `account_banned`, también con Google: `?login=error&code=account_banned`); sale de los
+    rankings y de los resultados de las temporadas que se cierren. No se puede suspender a
+    un administrador (`cannot_ban_admin`). **Levantar** la suspensión lo deja entrar otra vez.
+  - Renombrar y suspender cierran los reportes abiertos sobre esa persona con esa acción.
+- **Límite:** una cuenta suspendida puede registrarse de nuevo con otro email; cerrar eso
+  necesita verificar el email (recuperación de contraseña, pendiente).
+
 ---
 
 ## 9. Seguridad: lista de control
@@ -655,6 +681,7 @@ Migración `api/migrations/20261104000001_friends.sql`; rutas en `api/src/routes
 - [x] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
 - [x] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
 - [x] Rankings sin emails; `display_name` validado y con lista de reservados.
+- [x] Moderación: reportes, cambio de nombre forzado y suspensión de cuentas (sección 8.9).
 - [x] Ranked sin ayudas durante la mano (sin `shoeCounts`; test).
 - [x] OAuth: `state` + PKCE, cookie temporal cifrada, intercambio del código solo en el
       servidor, nunca vincular por email automáticamente (solo de forma explícita con

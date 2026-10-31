@@ -328,6 +328,9 @@ estrategia, con re-división real):
 | POST | `/friends/{userId}/remove` | Dejar de ser amigos | Sí |
 | POST | `/rooms/{code}/invite` | Invitar a un amigo a la sala en la que estás | Sí |
 | POST | `/me/invitations/{id}/dismiss` | Descartar una invitación | Sí |
+| POST | `/reports` | Reportar a alguien por su nombre visible | Sí |
+| GET | `/admin/reports` · `/admin/users?name=` | Reportes y búsqueda de usuarios (administradores) | Admin |
+| POST | `/admin/reports/{id}/dismiss` · `/admin/users/{id}/rename` · `/ban` · `/unban` | Moderar (administradores) | Admin |
 | GET | `/cosmetics` | Catálogo de cosméticos y el logro que desbloquea cada uno | No |
 | GET · PUT | `/me/cosmetics` | Cosméticos que tiene y los que tiene puestos | Sí |
 | POST | `/rooms` | Crea una sala multijugador (pública o privada) | Sí |
