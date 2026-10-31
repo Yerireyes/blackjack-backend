@@ -1,3 +1,5 @@
 # sqlx guarda el checksum de cada migración: tienen que ser LF en cualquier sistema,
 # o con core.autocrlf una migración ya aplicada parece modificada.
 api/migrations/*.sql text eol=lf
+# Los scripts de shell corren en Linux: siempre LF.
+*.sh text eol=lf
