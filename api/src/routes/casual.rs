@@ -403,6 +403,7 @@ pub async fn weekly_leaderboard(
                       row_number() OVER (ORDER BY b.peak DESC, u.display_name_key) AS n
                FROM best b JOIN users u ON u.id = b.user_id
                LEFT JOIN user_cosmetics c ON c.user_id = b.user_id
+               WHERE u.banned_at IS NULL
            )
            SELECT user_id, peak AS "peak!", display_name, title AS "title?", pos AS "pos!",
                   n AS "n!"

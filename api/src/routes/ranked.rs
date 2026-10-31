@@ -360,7 +360,7 @@ pub async fn leaderboard(
                       rank() OVER (ORDER BY a.net DESC) AS pos,
                       row_number() OVER (ORDER BY a.net DESC, u.display_name_key) AS n
                FROM ranked_accounts a JOIN users u ON u.id = a.user_id
-               WHERE a.season_id = $1 AND a.hands >= $2
+               WHERE a.season_id = $1 AND a.hands >= $2 AND u.banned_at IS NULL
            )
            SELECT q.user_id, q.net AS "net!", q.hands, q.display_name, q.pos AS "pos!", r.medal,
                   c.title AS "title?"
@@ -488,7 +488,8 @@ pub async fn close_seasons(pool: &PgPool) -> Result<u64, sqlx::Error> {
              FROM (SELECT season_id, user_id, net, hands,
                           rank() OVER (ORDER BY net DESC) AS pos,
                           count(*) OVER () AS total
-                   FROM ranked_accounts WHERE season_id = $1 AND hands >= $2) q",
+                   FROM ranked_accounts WHERE season_id = $1 AND hands >= $2
+                     AND user_id NOT IN (SELECT id FROM users WHERE banned_at IS NOT NULL)) q",
             id,
             MIN_HANDS
         )

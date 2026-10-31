@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.balance, d.hands, d.status, u.display_name, c.title AS \"title?\",\n                      1 + (SELECT count(*) FROM daily_attempts o\n                           WHERE o.day = d.day AND o.status = 'finished'\n                             AND o.balance > d.balance) AS \"pos!\"\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id\n               WHERE d.day = $1 AND d.user_id = $2",
+  "query": "SELECT d.balance, d.hands, d.status, u.display_name, c.title AS \"title?\",\n                      1 + (SELECT count(*) FROM daily_attempts o\n                           WHERE o.day = d.day AND o.status = 'finished'\n                             AND o.balance > d.balance\n                             AND ($3::uuid[] IS NULL OR o.user_id = ANY($3))) AS \"pos!\"\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id\n               WHERE d.day = $1 AND d.user_id = $2",
   "describe": {
     "columns": [
       {
@@ -68,7 +68,8 @@
     "parameters": {
       "Left": [
         "Date",
-        "Uuid"
+        "Uuid",
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -80,5 +81,5 @@
       null
     ]
   },
-  "hash": "c653cfb5cbefb1dfecdcfe295cab5934ca4660f17e9816a7beee640b16a2d10d"
+  "hash": "0591745312da275859ad23c3edf29b7f09cec6ba1d954f4db1357c8ab00c0281"
 }

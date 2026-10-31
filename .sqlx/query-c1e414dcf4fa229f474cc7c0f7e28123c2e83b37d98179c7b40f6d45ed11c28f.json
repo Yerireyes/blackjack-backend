@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH q AS (\n               SELECT d.user_id, d.balance, d.hands, u.display_name, c.title,\n                      rank() OVER (ORDER BY d.balance DESC) AS pos,\n                      row_number() OVER (ORDER BY d.balance DESC, d.finished_at) AS n\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id\n               WHERE d.day = $1 AND d.status = 'finished'\n           )\n           SELECT user_id, balance, hands, display_name, title AS \"title?\", pos AS \"pos!\"\n           FROM q WHERE n <= 100 ORDER BY n",
+  "query": "WITH q AS (\n               SELECT d.user_id, d.balance, d.hands, u.display_name, c.title,\n                      rank() OVER (ORDER BY d.balance DESC) AS pos,\n                      row_number() OVER (ORDER BY d.balance DESC, d.finished_at) AS n\n               FROM daily_attempts d JOIN users u ON u.id = d.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = d.user_id\n               WHERE d.day = $1 AND d.status = 'finished'\n                 AND u.banned_at IS NULL\n                 AND ($2::uuid[] IS NULL OR d.user_id = ANY($2))\n           )\n           SELECT user_id, balance, hands, display_name, title AS \"title?\", pos AS \"pos!\"\n           FROM q WHERE n <= 100 ORDER BY n",
   "describe": {
     "columns": [
       {
@@ -67,7 +67,8 @@
     ],
     "parameters": {
       "Left": [
-        "Date"
+        "Date",
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -79,5 +80,5 @@
       null
     ]
   },
-  "hash": "22d799bcea51e499cfea98bc4e69f5bf9e7c64ffd8a8738fb6f3d804dbebeb43"
+  "hash": "c1e414dcf4fa229f474cc7c0f7e28123c2e83b37d98179c7b40f6d45ed11c28f"
 }

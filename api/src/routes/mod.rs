@@ -4,10 +4,13 @@ pub mod auth;
 pub mod casual;
 pub mod cosmetics;
 pub mod daily;
+pub mod friends;
 pub mod google;
+pub mod moderation;
 pub mod play;
 pub mod ranked;
 pub mod sessions;
+pub mod stats;
 
 use axum::extract::State;
 use axum::http::StatusCode;

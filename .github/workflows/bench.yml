@@ -1,0 +1,41 @@
+# Benchmarks del motor: en los PR que tocan el motor, corre los de main y los de la rama
+# en la misma máquina y falla si alguno empeora más de un 20 %. Las máquinas de GitHub
+# varían de un día a otro, pero dentro de una misma corrida son comparables.
+name: Benchmarks
+
+on:
+  pull_request:
+    paths: ["engine/**", "Cargo.lock"]
+  workflow_dispatch:
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Comparar con main
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # Mismo directorio de compilación para las dos versiones: criterion guarda ahí la
+      # línea base y la comparación.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Benchmarks de main (línea base)
+        run: |
+          git worktree add ../base origin/main
+          cd ../base
+          cargo bench -p engine --bench analyze -- --save-baseline main
+      - name: Benchmarks de la rama
+        run: cargo bench -p engine --bench analyze -- --baseline main
+      - name: Comparar (falla si algo empeora más de 20 %)
+        run: node scripts/bench-compare.mjs 0.20

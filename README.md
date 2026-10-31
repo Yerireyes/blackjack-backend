@@ -188,9 +188,17 @@ npm run sqlx:prepare     # regenera .sqlx tras cambiar consultas SQL
 - **WASM y contrato:** `npm run build:wasm`, `npm run check:contract` (falla si
   `contract.ts` no coincide con Rust) y `npm run smoke:wasm`.
 
+- **Docker:** construye la imagen de la API y comprueba que el binario arranca.
+
 Para que un PR no se pueda fusionar con la CI en rojo: en GitHub, *Settings → Branches →
-Branch protection rules* para `main`, con «Require status checks to pass» y los dos
+Branch protection rules* para `main`, con «Require status checks to pass» y los tres
 trabajos marcados.
+
+**Benchmarks** ([`.github/workflows/bench.yml`](.github/workflows/bench.yml)): en los PR
+que tocan el motor corre los benchmarks de `main` y los de la rama en la misma máquina y
+falla si alguno empeora más de un 20 % (`scripts/bench-compare.mjs`). También se puede
+lanzar a mano (*Actions → Benchmarks → Run workflow*). Las máquinas de GitHub son
+ruidosas: si falla por poco, volver a correrlo antes de buscar la causa.
 
 Uso del motor desde el front (Web Worker), con la dependencia
 `"@bj/engine-wasm": "file:../Backend/engine-wasm/pkg"`:
@@ -312,6 +320,17 @@ estrategia, con re-división real):
 | GET | `/daily/me` | El intento del reto de hoy | Sí |
 | GET | `/daily/leaderboard?day=AAAA-MM-DD` | Top 100 por saldo final del día | No |
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas | Sí |
+| GET | `/me/history` | Historial de rondas liquidadas (`?kind=&before=&limit=`) | Sí |
+| GET | `/me/stats` | Resultados por modo y puntos débiles de las decisiones revisadas | Sí |
+| GET | `/friends` | Amigos (conectados y en qué sala pública), solicitudes e invitaciones | Sí |
+| POST | `/friends/requests` | Pedir amistad por nombre visible | Sí |
+| POST | `/friends/requests/{userId}/accept` · `/decline` | Aceptar, rechazar o cancelar | Sí |
+| POST | `/friends/{userId}/remove` | Dejar de ser amigos | Sí |
+| POST | `/rooms/{code}/invite` | Invitar a un amigo a la sala en la que estás | Sí |
+| POST | `/me/invitations/{id}/dismiss` | Descartar una invitación | Sí |
+| POST | `/reports` | Reportar a alguien por su nombre visible | Sí |
+| GET | `/admin/reports` · `/admin/users?name=` | Reportes y búsqueda de usuarios (administradores) | Admin |
+| POST | `/admin/reports/{id}/dismiss` · `/admin/users/{id}/rename` · `/ban` · `/unban` | Moderar (administradores) | Admin |
 | GET | `/cosmetics` | Catálogo de cosméticos y el logro que desbloquea cada uno | No |
 | GET · PUT | `/me/cosmetics` | Cosméticos que tiene y los que tiene puestos | Sí |
 | POST | `/rooms` | Crea una sala multijugador (pública o privada) | Sí |
@@ -379,7 +398,54 @@ estrategia, con re-división real):
 Front y API van bajo el mismo dominio: un reverse proxy sirve el `dist/` del front en `/` y
 reenvía `/api` a la API, que escucha solo en local (`BIND_ADDR=127.0.0.1:8080`).
 
+### Con Docker (recomendado)
+
+[`docker-compose.yml`](docker-compose.yml) levanta PostgreSQL 18 y la API
+([`Dockerfile`](Dockerfile): compila con `.sqlx`, imagen `debian-slim` con solo el binario,
+usuario sin privilegios). La API publica `127.0.0.1:8080` y el reverse proxy de la máquina
+(abajo) la expone en HTTPS.
+
+```sh
+cp .env.example .env      # JWT_SECRET, POSTGRES_PASSWORD, COOKIE_SECURE=true, FRONTEND_ORIGIN...
+docker compose up -d --build
+docker compose logs -f api
+```
+
+- `DATABASE_URL` lo pone el compose (apunta al servicio `db`); el del `.env` no se usa.
+- La red de docker tiene la subred fija `172.28.0.0/24`: el proxy de la máquina llega a la
+  API desde `172.28.0.1`, que es el `TRUSTED_PROXIES` del compose.
+- Las migraciones van dentro del binario y se aplican al arrancar.
+- Sin Docker: `cargo build --release -p api` y un servicio de systemd con el `.env`.
+
+### Respaldos
+
+[`scripts/backup.sh`](scripts/backup.sh) hace un `pg_dump` en formato custom a
+`backups/blackjack-AAAAMMDD-HHMMSS.dump` y borra los de más de 14 días
+(`BACKUP_KEEP_DAYS`). Falla si el respaldo queda vacío. Con cron, todos los días a las 4:
+
+```sh
+0 4 * * * /srv/blackjack/scripts/backup.sh >> /var/log/blackjack-backup.log 2>&1
+```
+
+Restaurar (reemplaza lo que haya):
+`docker compose exec -T db pg_restore -U blackjack -d blackjack --clean --if-exists < archivo.dump`.
+Conviene copiar `backups/` fuera de la máquina (otro disco o un bucket) y probar una
+restauración de vez en cuando. Las salas viven en memoria y no se respaldan.
+
+### Métricas
+
+Con `METRICS_TOKEN` (32 caracteres o más), `GET /api/v1/metrics` devuelve métricas en el
+formato de Prometheus: tiempo arriba, respuestas HTTP por clase (2xx, 4xx, 5xx…), cuentas,
+rondas en juego por modo, salas abiertas, jugadores y espectadores, y conexiones a
+PostgreSQL. Hay que mandar `Authorization: Bearer <token>`; sin el token configurado la ruta
+responde 404. Sirve para Prometheus + Grafana, o para una alerta simple sobre los 5xx.
+
+### Configuración
+
 `.env` del servidor (además de `DATABASE_URL` y `JWT_SECRET`):
+
+La API **no arranca** si `FRONTEND_ORIGIN` usa `https://` y `COOKIE_SECURE` no es `true`
+(la cookie de sesión viajaría también por HTTP), ni si el origen trae ruta o barra final.
 
 ```sh
 COOKIE_SECURE=true
@@ -471,6 +537,4 @@ apagan para medir en frío, salvo `cached_next_decision_6d`.
 
 - Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
   óptimas no cuenta Casual (sección 8.1).
-- CI: comparar benchmarks entre ramas (avisar si algo empeora más de un 20 %). Las máquinas
-  de GitHub dan tiempos muy variables, así que hace falta un runner fijo o muchas
-  repeticiones para que sea confiable.
+- Cuentas: recuperar, cambiar y crear contraseña, y borrar la cuenta.

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH best AS (\n               SELECT user_id, max(peak) AS peak FROM casual_runs\n               WHERE started_at >= $1 GROUP BY user_id\n           ), ranked AS (\n               SELECT b.user_id, b.peak, u.display_name, c.title,\n                      rank() OVER (ORDER BY b.peak DESC) AS pos,\n                      row_number() OVER (ORDER BY b.peak DESC, u.display_name_key) AS n\n               FROM best b JOIN users u ON u.id = b.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = b.user_id\n           )\n           SELECT user_id, peak AS \"peak!\", display_name, title AS \"title?\", pos AS \"pos!\",\n                  n AS \"n!\"\n           FROM ranked WHERE n <= 100 OR user_id = $2\n           ORDER BY n",
+  "query": "WITH best AS (\n               SELECT user_id, max(peak) AS peak FROM casual_runs\n               WHERE started_at >= $1 GROUP BY user_id\n           ), ranked AS (\n               SELECT b.user_id, b.peak, u.display_name, c.title,\n                      rank() OVER (ORDER BY b.peak DESC) AS pos,\n                      row_number() OVER (ORDER BY b.peak DESC, u.display_name_key) AS n\n               FROM best b JOIN users u ON u.id = b.user_id\n               LEFT JOIN user_cosmetics c ON c.user_id = b.user_id\n               WHERE u.banned_at IS NULL\n           )\n           SELECT user_id, peak AS \"peak!\", display_name, title AS \"title?\", pos AS \"pos!\",\n                  n AS \"n!\"\n           FROM ranked WHERE n <= 100 OR user_id = $2\n           ORDER BY n",
   "describe": {
     "columns": [
       {
@@ -70,5 +70,5 @@
       null
     ]
   },
-  "hash": "17bfd187e62ff997403f10b15ed2e10a5a64e3665c96622e659b07850c3ba8fa"
+  "hash": "3daff7ce9b78da5d32f60d72b6747305cf1af08c0c7b9fadb2643eb11ead3f6b"
 }

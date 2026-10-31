@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (SELECT count(*) FROM friends WHERE user_id = $1) AS \"friends!\",\n                  (SELECT count(*) FROM friend_requests WHERE from_id = $1) AS \"outgoing!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "friends!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "outgoing!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "1ddc951f1ccf6ab62534f0d3efcddfdb093ed35adfa71a246710dd9a39607d14"
+}

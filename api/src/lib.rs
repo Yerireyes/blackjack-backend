@@ -6,6 +6,7 @@ pub mod client_ip;
 pub mod config;
 pub mod error;
 pub mod extract;
+pub mod metrics;
 pub mod names;
 pub mod rooms;
 pub mod routes;
@@ -109,7 +110,8 @@ async fn not_found() -> ApiError {
 /// Construye la aplicación. Necesita `ConnectInfo<SocketAddr>` (límite por IP).
 pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
     use routes::{
-        achievements, analyze, auth, casual, cosmetics, daily, google, play, ranked, sessions,
+        achievements, analyze, auth, casual, cosmetics, daily, friends, google, moderation, play,
+        ranked, sessions, stats,
     };
 
     let analyze_routes = Router::new()
@@ -133,6 +135,12 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/casual/runs/{id}/retire", post(casual::retire))
         .route("/daily/attempts", post(daily::start))
         .route("/rooms", post(rooms::create))
+        .route("/rooms/{code}/invite", post(friends::invite))
+        .route("/friends/requests", post(friends::request))
+        .route("/reports", post(moderation::report))
+        .route("/friends/requests/{id}/accept", post(friends::accept))
+        .route("/friends/requests/{id}/decline", post(friends::decline))
+        .route("/friends/{id}/remove", post(friends::remove))
         .route("/play/rounds", post(play::deal))
         .route("/play/rounds/{id}/actions", post(play::act))
         .route("/play/rounds/{id}/insurance", post(play::insurance))
@@ -146,6 +154,16 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         )
         .route("/me/records", get(casual::records))
         .route("/me/achievements", get(achievements::mine))
+        .route("/me/history", get(stats::history))
+        .route("/friends", get(friends::list))
+        .route("/admin/reports", get(moderation::reports))
+        .route("/admin/reports/{id}/dismiss", post(moderation::dismiss))
+        .route("/admin/users", get(moderation::users))
+        .route("/admin/users/{id}/rename", post(moderation::rename))
+        .route("/admin/users/{id}/ban", post(moderation::ban))
+        .route("/admin/users/{id}/unban", post(moderation::unban))
+        .route("/me/invitations/{id}/dismiss", post(friends::dismiss))
+        .route("/me/stats", get(stats::stats))
         .route("/cosmetics", get(cosmetics::catalog))
         .route("/rooms", get(rooms::list))
         .route("/rooms/{code}", get(rooms::get))
@@ -164,12 +182,17 @@ pub fn app(state: AppState, cfg: &Config, limits: &RateLimits) -> Router {
         .route("/sessions/{id}/hands", post(sessions::add_hand))
         .route("/sessions/{id}/stats", get(sessions::stats))
         .route("/sessions/{id}/end", post(sessions::end))
-        .route("/health", get(routes::health));
+        .route("/health", get(routes::health))
+        .route("/metrics", get(metrics::serve));
 
     let api = analyze_routes
         .merge(auth_routes)
         .merge(play_routes)
         .merge(other_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            metrics::count,
+        ))
         .with_state(state);
 
     let origin = cfg

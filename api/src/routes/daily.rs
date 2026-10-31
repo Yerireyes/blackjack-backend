@@ -30,6 +30,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::routes::auth::unique_violation;
 use crate::routes::casual::{self, lock_user, now_micros, require_display_name, rfc3339, MIN_BET};
 use crate::routes::cosmetics::title;
+use crate::routes::friends;
 use crate::state::AppState;
 
 pub const START_BALANCE: i64 = 500;
@@ -314,11 +315,14 @@ pub async fn me(
 #[derive(Deserialize)]
 pub struct LeaderboardQuery {
     day: Option<String>,
+    /// `friends`: solo el usuario y sus amigos (necesita sesión).
+    scope: Option<String>,
 }
 
-/// `GET /daily/leaderboard?day=AAAA-MM-DD`: los 100 mejores saldos finales del día entre
-/// los intentos terminados, más la fila del usuario. Sin `day`, hoy. Es público: sin
-/// sesión no viene `me`.
+/// `GET /daily/leaderboard?day=AAAA-MM-DD[&scope=friends]`: los 100 mejores saldos
+/// finales del día entre los intentos terminados, más la fila del usuario. Sin `day`, hoy.
+/// Es público: sin sesión no viene `me`. Con `scope=friends`, el reto entre amigos: las
+/// posiciones se cuentan solo entre el usuario y sus amigos.
 pub async fn leaderboard(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -330,6 +334,15 @@ pub async fn leaderboard(
             .map_err(|_| ApiError::bad_request("day debe tener el formato AAAA-MM-DD"))?,
     };
     let me = current_session(&jar, &state).await?.map(|s| s.user_id);
+    let circle: Option<Vec<Uuid>> = match q.scope.as_deref() {
+        None => None,
+        Some("friends") => {
+            let me = me.ok_or_else(ApiError::unauthorized)?;
+            let mut db = state.pool.acquire().await?;
+            Some(friends::circle(&mut db, me).await?.into_iter().collect())
+        }
+        Some(_) => return Err(ApiError::bad_request("scope solo puede ser friends")),
+    };
     let rows = sqlx::query!(
         r#"WITH q AS (
                SELECT d.user_id, d.balance, d.hands, u.display_name, c.title,
@@ -338,10 +351,13 @@ pub async fn leaderboard(
                FROM daily_attempts d JOIN users u ON u.id = d.user_id
                LEFT JOIN user_cosmetics c ON c.user_id = d.user_id
                WHERE d.day = $1 AND d.status = 'finished'
+                 AND u.banned_at IS NULL
+                 AND ($2::uuid[] IS NULL OR d.user_id = ANY($2))
            )
            SELECT user_id, balance, hands, display_name, title AS "title?", pos AS "pos!"
            FROM q WHERE n <= 100 ORDER BY n"#,
-        day
+        day,
+        circle.as_deref()
     )
     .fetch_all(&state.pool)
     .await?;
@@ -363,12 +379,14 @@ pub async fn leaderboard(
             r#"SELECT d.balance, d.hands, d.status, u.display_name, c.title AS "title?",
                       1 + (SELECT count(*) FROM daily_attempts o
                            WHERE o.day = d.day AND o.status = 'finished'
-                             AND o.balance > d.balance) AS "pos!"
+                             AND o.balance > d.balance
+                             AND ($3::uuid[] IS NULL OR o.user_id = ANY($3))) AS "pos!"
                FROM daily_attempts d JOIN users u ON u.id = d.user_id
                LEFT JOIN user_cosmetics c ON c.user_id = d.user_id
                WHERE d.day = $1 AND d.user_id = $2"#,
             day,
-            user_id
+            user_id,
+            circle.as_deref()
         )
         .fetch_optional(&state.pool)
         .await?

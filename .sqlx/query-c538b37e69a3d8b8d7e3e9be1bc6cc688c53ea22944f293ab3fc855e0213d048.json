@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM friends WHERE user_id = $1 AND friend_id = $2) AS \"yes!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "yes!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c538b37e69a3d8b8d7e3e9be1bc6cc688c53ea22944f293ab3fc855e0213d048"
+}

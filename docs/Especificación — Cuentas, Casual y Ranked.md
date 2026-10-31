@@ -139,6 +139,7 @@ interface Me {
   needsDisplayName: boolean; hasPassword: boolean;
   providers: string[];   // proveedores vinculados: ["google"]
   createdAt: string;
+  isAdmin: boolean;      // su email está en ADMIN_EMAILS (sección 8.9)
 }
 ```
 
@@ -342,6 +343,12 @@ por el motor y el front los declara a mano, como indica «Front — Fase 1 Cuent
 | GET | `/daily/me` | El intento de hoy o 404 |
 | GET | `/daily/leaderboard?day=` | Top 100 del día por saldo final + la fila del usuario |
 | GET | `/me/achievements` | Logros desbloqueados y racha de decisiones óptimas |
+| GET | `/me/history?kind=&before=&limit=` | Rondas liquidadas, de la más reciente a la más antigua |
+| GET | `/me/stats` | Resultados por modo y estadísticas de decisiones (puntos débiles) |
+| GET | `/friends` | Amigos, solicitudes e invitaciones a salas |
+| POST | `/friends/requests` · `/friends/requests/{userId}/accept` · `/decline` · `/friends/{userId}/remove` | Solicitudes y amistades |
+| POST | `/rooms/{code}/invite` · `/me/invitations/{id}/dismiss` | Invitaciones a salas |
+| GET | `/daily/leaderboard?scope=friends` | El reto diario solo entre el usuario y sus amigos |
 | GET | `/cosmetics` | Catálogo de cosméticos (público) |
 | GET · PUT | `/me/cosmetics` | Los que tiene y los que tiene puestos; `PUT` los cambia |
 
@@ -542,6 +549,7 @@ Migración `api/migrations/20261101000001_achievements.sql`; lógica en
   | `rankedQualified` | Llegar a 200 manos en una temporada ranked |
   | `rankedMedal` | Recibir medalla al cerrar una temporada ranked |
   | `dailyComplete` | Jugar las 30 manos del reto diario |
+  | `tournamentWin` | Ganar un torneo en una sala (se otorga al terminar el torneo) |
 
 - **Cuándo.** Al liquidar cada ronda, dentro de la misma transacción (también si la liquida
   el cierre de rondas abandonadas). Los nuevos vienen en `result.unlocked` y quedan en la
@@ -568,7 +576,7 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
   | Paño | `feltGreen` | `feltBlue` (`dailyComplete`), `feltRed` (`doubleUp`), `feltBlack` (`rankedMedal`) |
   | Dorso | `backClassic` | `backGold` (`blackjack`), `backMidnight` (`perfectSplit`) |
   | Fichas | `chipsClassic` | `chipsNeon` (`sixToFiveSurvivor`), `chipsGold` (`rankedQualified`) |
-  | Título | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`) |
+  | Título | (ninguno) | `titleRookie` (`firstWin`), `titleCoolHead` (`optimal10`), `titleByTheBook` (`optimal50`), `titleMedalist` (`rankedMedal`), `titleChampion` (`tournamentWin`) |
 
   Todo logro desbloquea al menos un cosmético (test).
 - **Lo que tiene** se deriva de sus logros cada vez; no se guarda. Así un cosmético nuevo
@@ -599,6 +607,70 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
   está en `analyze_hand` (`insuranceEv`) para quien quiera mostrarlo en las ayudas.
 - **Salas:** ver «Especificación — Salas Casual.md», sección 5.
 
+### 8.7 Historial, estadísticas y entrenamiento dirigido
+
+Lógica en `api/src/routes/stats.rs`; índice `rounds_user_settled` en
+`api/migrations/20261103000001_history.sql`.
+
+- **Historial** (`GET /me/history?kind=&before=&limit=`): las rondas liquidadas de Casual,
+  Ranked y el reto diario, de la más reciente a la más antigua, de a 1–50 (20 por defecto).
+  Cada una con las manos, el dealer revelado, el seguro y, en Ranked y el reto, la revisión.
+  `nextBefore` pide la página siguiente. Las rondas de las salas viven en memoria y no
+  quedan.
+- **Situación de cada decisión:** desde esta versión, cada `ReviewItem` guarda `spot`:
+  tipo de mano (`hard`, `soft`, `pair`), total, rango del par y carta visible del dealer.
+  Las revisiones anteriores no la tienen: cuentan en los totales, no en los grupos.
+- **Estadísticas** (`GET /me/stats`): por modo, rondas, neto, ganadas, empatadas, perdidas,
+  blackjacks y la mejor y peor ronda. De las decisiones revisadas (las últimas 5.000
+  rondas de Ranked y el reto): total, óptimas, EV perdido, por tipo de mano y hasta 10
+  **puntos débiles**: las situaciones con al menos un error, ordenadas por EV perdido.
+- **Entrenamiento dirigido:** lo arma el front en Práctica (en el navegador), repartiendo
+  manos de los `weakSpots` contra esa carta del dealer. El backend no reparte esas manos:
+  solo dice cuáles practicar. Casual no aporta datos porque no se revisa.
+
+### 8.8 Amigos
+
+Migración `api/migrations/20261104000001_friends.sql`; rutas en `api/src/routes/friends.rs`.
+
+- **Solicitudes** por nombre visible (misma clave que el registro: sin distinguir
+  mayúsculas). Si el otro ya había pedido, quedan como amigos en el acto. Errores:
+  `user_not_found`, `already_friends`, `request_exists`, `too_many_friends` (máximo 200) y
+  `too_many_requests` (50 pendientes enviadas). Rechazar una recibida y cancelar una enviada
+  son la misma ruta (`decline`). La amistad se guarda en las dos direcciones.
+- **Conectado:** una sesión usada en los últimos 10 minutos o estar en una sala. Si el amigo
+  está en una sala **pública**, `room` la trae; las privadas solo se ven por invitación.
+- **Invitaciones a salas:** solo a amigos y estando conectado a la sala (pública o privada).
+  Duran 30 minutos y solo se muestran mientras la sala siga abierta; invitar otra vez
+  renueva el plazo. La tarea horaria borra las vencidas. No hay aviso en tiempo real: el
+  front pide `GET /friends` cada tanto (sección 3 de «Front — Amigos.md»).
+- **Reto entre amigos:** `GET /daily/leaderboard?scope=friends` cuenta las posiciones solo
+  entre el usuario y sus amigos (necesita sesión).
+
+### 8.9 Moderación
+
+Migración `api/migrations/20261105000001_moderation.sql`; rutas en
+`api/src/routes/moderation.rs`.
+
+- **Administradores:** los emails de `ADMIN_EMAILS` (separados por comas). No se guarda en
+  la base, así que nadie se vuelve administrador desde la API. `Me.isAdmin` le dice al
+  front si mostrar el panel. Las rutas `/admin/*` responden 403 `not_admin` a los demás.
+- **Reportes** (`POST /reports` `{ displayName, reason, details? }`): motivo `name`,
+  `behavior`, `cheating` u `other`; detalle de hasta 300 caracteres. Un solo reporte
+  abierto de cada persona sobre otra (`report_exists`).
+- **Acciones del administrador:**
+  - Ver reportes abiertos o resueltos (los últimos 200) y buscar usuarios por el comienzo
+    del nombre (con email, suspensión y reportes abiertos).
+  - **Descartar** un reporte.
+  - **Cambiar el nombre:** pasa a uno provisional (`JugadorNNNN`) y el usuario tiene que
+    elegir otro (`needsDisplayName`), como al crear la cuenta con Google.
+  - **Suspender** (`{ reason }`): revoca todas sus sesiones; no puede iniciar sesión (403
+    `account_banned`, también con Google: `?login=error&code=account_banned`); sale de los
+    rankings y de los resultados de las temporadas que se cierren. No se puede suspender a
+    un administrador (`cannot_ban_admin`). **Levantar** la suspensión lo deja entrar otra vez.
+  - Renombrar y suspender cierran los reportes abiertos sobre esa persona con esa acción.
+- **Límite:** una cuenta suspendida puede registrarse de nuevo con otro email; cerrar eso
+  necesita verificar el email (recuperación de contraseña, pendiente).
+
 ---
 
 ## 9. Seguridad: lista de control
@@ -609,12 +681,14 @@ Migración `api/migrations/20261102000001_cosmetics.sql`; lógica en
 - [x] Toda apuesta y acción se valida en el servidor (límites, saldo, acciones permitidas, turno).
 - [x] Transacciones con bloqueo de fila; una ronda activa por usuario; idempotencia.
 - [x] Rankings sin emails; `display_name` validado y con lista de reservados.
+- [x] Moderación: reportes, cambio de nombre forzado y suspensión de cuentas (sección 8.9).
 - [x] Ranked sin ayudas durante la mano (sin `shoeCounts`; test).
 - [x] OAuth: `state` + PKCE, cookie temporal cifrada, intercambio del código solo en el
       servidor, nunca vincular por email automáticamente (solo de forma explícita con
       sesión) y crear cuentas solo con email verificado.
 - [x] Límite de tasa en registro, login, OAuth y acciones de juego.
-- [ ] Cookies `Secure` en producción (`cookie_secure`); CORS solo para `FRONTEND_ORIGIN`.
+- [x] Cookies `Secure` en producción (`cookie_secure`); CORS solo para `FRONTEND_ORIGIN`. La
+      API no arranca con `FRONTEND_ORIGIN` en `https://` y `COOKIE_SECURE` apagado.
 - [x] **Sesiones revocables.** Tabla `auth_sessions (id, user_id, created_at, expires_at,
       revoked_at, last_seen_at, user_agent)`; el JWT lleva su `id` como `sid`. Cada petición
       autenticada comprueba que la fila exista, no esté revocada y no haya vencido (una

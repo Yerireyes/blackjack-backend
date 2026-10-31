@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind,\n                  count(*) AS \"rounds!\",\n                  coalesce(sum(net), 0)::bigint AS \"net!\",\n                  count(*) FILTER (WHERE net > 0) AS \"wins!\",\n                  count(*) FILTER (WHERE net = 0) AS \"pushes!\",\n                  count(*) FILTER (WHERE net < 0) AS \"losses!\",\n                  count(*) FILTER (\n                      WHERE jsonb_path_exists(state, '$.hands[*] ? (@.outcome == \"blackjack\")')\n                  ) AS \"blackjacks!\",\n                  coalesce(max(net), 0) AS \"best!\",\n                  coalesce(min(net), 0) AS \"worst!\"\n           FROM rounds WHERE user_id = $1 AND status = 'settled'\n           GROUP BY kind",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rounds",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rounds!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "net!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "wins!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "pushes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "losses!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "blackjacks!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "best!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "worst!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9bfb0011febfc966b0b58820e388f874c18809dbb3b5604caeff9691f2a174e1"
+}

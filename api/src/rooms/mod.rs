@@ -20,6 +20,7 @@ use engine::game::{
 };
 use futures_util::{SinkExt, StreamExt};
 use rand::RngExt;
+use sqlx::PgPool;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -75,6 +76,8 @@ impl RoomsConfig {
 pub struct Summary {
     pub info: RoomInfo,
     pub host: Uuid,
+    /// Usuarios con al menos una conexión abierta (para amigos e invitaciones).
+    pub members: Vec<Uuid>,
 }
 
 struct Handle {
@@ -87,6 +90,8 @@ pub struct Rooms {
     pub cfg: RoomsConfig,
     shoe: ShoeFactory,
     next_conn: AtomicU64,
+    /// Para otorgar el logro del ganador de un torneo (lo único que una sala escribe).
+    pool: Option<PgPool>,
 }
 
 /// Sin letras ni números que se confundan (0/O, 1/I/L).
@@ -100,16 +105,17 @@ fn new_code() -> String {
 }
 
 impl Rooms {
-    pub fn new(cfg: RoomsConfig) -> Rooms {
-        Rooms::with_shoe(cfg, Arc::new(shuffled_shoe))
+    pub fn new(cfg: RoomsConfig, pool: Option<PgPool>) -> Rooms {
+        Rooms::with_shoe(cfg, Arc::new(shuffled_shoe), pool)
     }
 
-    pub fn with_shoe(cfg: RoomsConfig, shoe: ShoeFactory) -> Rooms {
+    pub fn with_shoe(cfg: RoomsConfig, shoe: ShoeFactory, pool: Option<PgPool>) -> Rooms {
         Rooms {
             map: Arc::new(Mutex::new(HashMap::new())),
             cfg,
             shoe,
             next_conn: AtomicU64::new(1),
+            pool,
         }
     }
 
@@ -147,6 +153,7 @@ impl Rooms {
         let summary = Arc::new(RwLock::new(Summary {
             info: info.clone(),
             host,
+            members: Vec::new(),
         }));
         let (tx, rx) = mpsc::channel(256);
         let room = Room::new(
@@ -156,6 +163,7 @@ impl Rooms {
             self.cfg.clone(),
             self.shoe.clone(),
             summary.clone(),
+            self.pool.clone(),
         );
         map.insert(code.clone(), Handle { tx, summary });
         let registry = self.map.clone();
@@ -198,6 +206,43 @@ impl Rooms {
     /// Salas abiertas ahora.
     pub fn len(&self) -> usize {
         self.lock().len()
+    }
+
+    /// La sala abierta (por código) si existe.
+    pub fn info(&self, code: &str) -> Option<RoomInfo> {
+        self.find(code).map(|(_, info)| info)
+    }
+
+    /// ¿El usuario está conectado a esa sala?
+    pub fn is_member(&self, code: &str, user: Uuid) -> bool {
+        let map = self.lock();
+        map.get(&code.to_ascii_uppercase())
+            .and_then(|h| h.summary.read().ok().map(|s| s.members.contains(&user)))
+            .unwrap_or(false)
+    }
+
+    /// Una sala pública en la que está conectado el usuario, si hay.
+    pub fn public_room_of(&self, user: Uuid) -> Option<RoomInfo> {
+        let map = self.lock();
+        map.values()
+            .filter_map(|h| h.summary.read().ok())
+            .find(|s| s.info.visibility == RoomVisibility::Public && s.members.contains(&user))
+            .map(|s| s.info.clone())
+    }
+
+    /// Salas abiertas, jugadores sentados y espectadores, para las métricas.
+    pub fn stats(&self) -> (usize, usize, usize) {
+        let map = self.lock();
+        let (seated, spectators) = map
+            .values()
+            .filter_map(|h| {
+                h.summary
+                    .read()
+                    .ok()
+                    .map(|s| (s.info.seated, s.info.spectators))
+            })
+            .fold((0, 0), |(a, b), (s, e)| (a + s as usize, b + e as usize));
+        (map.len(), seated, spectators)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -244,6 +289,9 @@ pub async fn create(
     if !(5..=7).contains(&req.seats) {
         return Err(ApiError::bad_request("la mesa tiene 5, 6 o 7 asientos"));
     }
+    if req.tournament.is_some_and(|t| !(5..=30).contains(&t.hands)) {
+        return Err(ApiError::bad_request("un torneo tiene de 5 a 30 manos"));
+    }
     let (rules, preset) = match (req.preset, req.rules) {
         (Some(p), None) => (p.rules(), Some(p)),
         (None, Some(r)) => (r, None),
@@ -267,6 +315,7 @@ pub async fn create(
         rules,
         preset,
         aids: req.aids,
+        tournament: req.tournament,
         created_at: rfc3339(now_micros()),
     };
     let info = state.rooms.create(info, user.id)?;

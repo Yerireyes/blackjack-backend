@@ -1,0 +1,6 @@
+target
+node_modules
+engine-wasm/pkg
+.env
+.git
+backups

@@ -218,6 +218,7 @@ mod tests {
             ev_chosen: 0.0,
             ev_best: 0.0,
             exact: true,
+            spot: None,
         }
     }
 

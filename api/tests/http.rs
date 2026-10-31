@@ -39,6 +39,8 @@ fn config(analyze_burst: u32) -> Config {
         trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
         google: None,
         daily_seed_secret: None,
+        metrics_token: None,
+        admin_emails: vec!["admin@example.com".into()],
     }
 }
 
@@ -592,6 +594,7 @@ async fn display_names(pool: PgPool) {
             "email",
             "hasPassword",
             "id",
+            "isAdmin",
             "needsDisplayName",
             "providers"
         ]
@@ -1878,8 +1881,9 @@ async fn ranked_leaderboard_and_seasons(pool: PgPool) {
     // La ronda nueva va a la cuenta de la temporada actual.
     assert_ne!(res.body["contextId"], b["id"]);
     let round = res.body["id"].as_str().unwrap().to_string();
-    // Simula una ronda que empezó en la temporada vieja y sigue en juego.
-    sqlx::query("UPDATE rounds SET context_id = $1::uuid")
+    // Simula una ronda que empezó en la temporada vieja y sigue en juego (el zapato es
+    // aleatorio: el reparto pudo haberla terminado con un blackjack).
+    sqlx::query("UPDATE rounds SET context_id = $1::uuid, status = 'active'")
         .bind(b["id"].as_str().unwrap())
         .execute(&pool)
         .await
@@ -2237,7 +2241,7 @@ async fn cosmetics_follow_achievements(pool: PgPool) {
     let res = send(&app, "GET", "/api/v1/cosmetics", None, None).await;
     assert_eq!(res.status, StatusCode::OK);
     let catalog = res.body.as_array().unwrap();
-    assert_eq!(catalog.len(), 14);
+    assert_eq!(catalog.len(), 15);
     assert_eq!(catalog[0], json!({ "id": "feltGreen", "slot": "felt" }));
     assert!(catalog
         .iter()
@@ -2430,5 +2434,353 @@ async fn insurance_in_casual(pool: PgPool) {
     assert_eq!(
         insure(&app, &ana, &round, false, &key()).await.body["phase"],
         "player"
+    );
+}
+
+// ---- Métricas ----
+
+async fn metrics(app: &Router, token: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder().uri("/api/v1/metrics");
+    if let Some(t) = token {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    let mut req = req.body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn metrics_need_their_token(pool: PgPool) {
+    // Sin METRICS_TOKEN la ruta no existe.
+    let app = test_app(pool.clone(), 10);
+    assert_eq!(metrics(&app, None).await.0, StatusCode::NOT_FOUND);
+
+    let token = "token-de-metricas-de-al-menos-32-caracteres";
+    let mut cfg = config(10);
+    cfg.metrics_token = Some(token.into());
+    let app = app_with(pool, &cfg);
+    register(&app, "ana@example.com").await;
+    assert_eq!(metrics(&app, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        metrics(&app, Some("otro")).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, text) = metrics(&app, Some(token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("\nbj_users 1\n"), "{text}");
+    assert!(
+        text.contains("bj_http_responses_total{class=\"2xx\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("bj_http_responses_total{class=\"4xx\"} 2"),
+        "{text}"
+    );
+    assert!(
+        text.contains("bj_rounds_active{kind=\"casual\"} 0"),
+        "{text}"
+    );
+    assert!(text.contains("\nbj_rooms_open 0\n"), "{text}");
+}
+
+fn app_with(pool: PgPool, cfg: &Config) -> Router {
+    app(AppState::new(pool, cfg), cfg, &RateLimits::new(cfg))
+}
+
+// ---- Historial y estadísticas ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn history_and_stats(pool: PgPool) {
+    use Face::*;
+    let app = test_app(pool.clone(), 10);
+    let ana = register(&app, "ana@example.com").await;
+    let res = send(&app, "GET", "/api/v1/me/stats", None, Some(&ana)).await;
+    assert_eq!(res.body["modes"], json!([]));
+    assert_eq!(res.body["decisions"]["decisions"], 0);
+
+    // Casual: pierde 20 (17 contra 20), gana 20 (19 contra 16 que se pasa) y blackjack (+15).
+    let run = new_run(&app, &ana, "vegas").await;
+    for (top, bet) in [
+        (vec![Ten, Ten, Seven, Ten], 20),
+        (vec![Ten, Nine, Nine, Seven, Ten], 20),
+        (vec![Ace, Nine, K, Seven], 10),
+    ] {
+        stack(&pool, &run, 6, &top).await;
+        let res = deal_round(&app, &ana, bet, &key()).await;
+        if res.body["phase"] == "player" {
+            let round = res.body["id"].as_str().unwrap().to_string();
+            act(&app, &ana, &round, "stand", &key()).await;
+        }
+    }
+    // Ranked: pedir con 17 contra 10 es un error (lo óptimo es plantarse).
+    let acc = ranked_me(&app, &ana).await;
+    stack_account(&pool, &acc, &[Ten, Ten, Seven, Ten]).await;
+    let round = ranked_deal(&app, &ana, 10).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = act(&app, &ana, &round, "hit", &key()).await;
+    if res.body["phase"] == "player" {
+        act(&app, &ana, &round, "stand", &key()).await;
+    }
+
+    // Historial: de la más reciente a la más antigua, de a 2.
+    let uri = "/api/v1/me/history";
+    let page = send(&app, "GET", &format!("{uri}?limit=2"), None, Some(&ana))
+        .await
+        .body;
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["kind"], "ranked");
+    assert_eq!(items[1]["net"], 15);
+    assert!(
+        items[1]["dealer"]["hole"].is_object(),
+        "con la oculta revelada"
+    );
+    assert!(items[1].get("review").is_none(), "Casual no se revisa");
+    let review = &items[0]["review"][0];
+    assert_eq!(
+        (&review["chosen"], &review["best"]),
+        (&json!("hit"), &json!("stand"))
+    );
+    assert_eq!(
+        review["spot"],
+        json!({ "kind": "hard", "total": 17, "dealerUp": 9 })
+    );
+    let before = page["nextBefore"].as_str().unwrap();
+    let page = send(
+        &app,
+        "GET",
+        &format!("{uri}?limit=2&before={before}"),
+        None,
+        Some(&ana),
+    )
+    .await
+    .body;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| &i["net"])
+            .collect::<Vec<_>>(),
+        [&json!(20), &json!(-20)]
+    );
+    assert!(page.get("nextBefore").is_none());
+    let res = send(&app, "GET", &format!("{uri}?kind=ranked"), None, Some(&ana)).await;
+    assert_eq!(res.body["items"].as_array().unwrap().len(), 1);
+    for bad in ["?kind=salas", "?limit=0", "?limit=51", "?before=ayer"] {
+        let res = send(&app, "GET", &format!("{uri}{bad}"), None, Some(&ana)).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    // Estadísticas.
+    let stats = send(&app, "GET", "/api/v1/me/stats", None, Some(&ana))
+        .await
+        .body;
+    assert_eq!(
+        stats["modes"][0],
+        json!({ "kind": "casual", "rounds": 3, "net": 15, "wins": 2, "pushes": 0,
+                "losses": 1, "blackjacks": 1, "bestWin": 20, "worstLoss": -20 })
+    );
+    assert_eq!(stats["modes"][1]["kind"], "ranked");
+    let d = &stats["decisions"];
+    // Pedir con 17 fue el error; si después se plantó, eso sí fue lo óptimo.
+    let n = review_len(&items[0]);
+    assert_eq!((&d["decisions"], &d["optimal"]), (&json!(n), &json!(n - 1)));
+    assert!(d["evLost"].as_f64().unwrap() > 0.0);
+    assert_eq!(d["byKind"][0]["kind"], "hard");
+    assert_eq!(
+        d["weakSpots"][0]["spot"],
+        json!({ "kind": "hard", "total": 17, "dealerUp": 9 })
+    );
+    // Sin sesión, nada.
+    let res = send(&app, "GET", "/api/v1/me/stats", None, None).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+}
+
+fn review_len(item: &Value) -> usize {
+    item["review"].as_array().map_or(0, |r| r.len())
+}
+
+// ---- Moderación ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn moderation(pool: PgPool) {
+    let app = test_app(pool.clone(), 10);
+    // admin@example.com está en ADMIN_EMAILS de la configuración de los tests.
+    let admin = register_named(&app, "admin@example.com", "Revisora")
+        .await
+        .cookie
+        .unwrap();
+    let ana = register(&app, "ana@example.com").await;
+    let beto = register(&app, "beto@example.com").await;
+    let me = send(&app, "GET", "/api/v1/auth/me", None, Some(&admin))
+        .await
+        .body;
+    assert_eq!(me["isAdmin"], true);
+    let me = send(&app, "GET", "/api/v1/auth/me", None, Some(&beto))
+        .await
+        .body;
+    assert_eq!(me["isAdmin"], false);
+    let beto_id = me["id"].as_str().unwrap().to_string();
+    // Una partida de Beto para verlo salir del ranking al suspenderlo.
+    let run = new_run(&app, &beto, "vegas").await;
+    set_run(&pool, &run, "peak = 900").await;
+
+    // Reportes.
+    let report = |name: &str, reason: &str| json!({ "displayName": name, "reason": reason });
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/reports",
+        Some(report("BETO", "name")),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED);
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/reports",
+        Some(report("beto", "cheating")),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(
+        (res.status, &res.body["code"]),
+        (StatusCode::CONFLICT, &json!("report_exists"))
+    );
+    for (body, status) in [
+        (report("beto", "feo"), StatusCode::BAD_REQUEST),
+        (report("ana", "name"), StatusCode::BAD_REQUEST),
+        (report("nadie", "name"), StatusCode::NOT_FOUND),
+    ] {
+        let res = send(&app, "POST", "/api/v1/reports", Some(body), Some(&ana)).await;
+        assert_eq!(res.status, status, "{}", res.body);
+    }
+
+    // Solo administradores.
+    let res = send(&app, "GET", "/api/v1/admin/reports", None, Some(&ana)).await;
+    assert_eq!(
+        (res.status, &res.body["code"]),
+        (StatusCode::FORBIDDEN, &json!("not_admin"))
+    );
+    let res = send(&app, "GET", "/api/v1/admin/reports", None, Some(&admin)).await;
+    assert_eq!(res.body.as_array().unwrap().len(), 1);
+    assert_eq!(res.body[0]["target"]["displayName"], "beto");
+    assert_eq!(res.body[0]["reason"], "name");
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/admin/users?name=BE",
+        None,
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(res.body[0]["email"], "beto@example.com");
+    assert_eq!(res.body[0]["openReports"], 1);
+
+    // Cambio de nombre forzado: queda provisional y se cierran sus reportes.
+    let uri = |action: &str| format!("/api/v1/admin/users/{beto_id}/{action}");
+    let res = send(&app, "POST", &uri("rename"), None, Some(&admin)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let new_name = res.body["displayName"].as_str().unwrap().to_string();
+    assert!(new_name.starts_with("Jugador"), "{new_name}");
+    let me = send(&app, "GET", "/api/v1/auth/me", None, Some(&beto))
+        .await
+        .body;
+    assert_eq!(
+        (&me["displayName"], &me["needsDisplayName"]),
+        (&json!(new_name), &json!(true))
+    );
+    let res = send(&app, "GET", "/api/v1/admin/reports", None, Some(&admin)).await;
+    assert_eq!(res.body, json!([]));
+    let res = send(
+        &app,
+        "GET",
+        "/api/v1/admin/reports?status=resolved",
+        None,
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(res.body[0]["action"], "rename");
+
+    // Suspensión: pierde las sesiones, no entra y sale del ranking.
+    let weekly = "/api/v1/casual/leaderboard/weekly";
+    let res = send(&app, "GET", weekly, None, None).await;
+    assert_eq!(res.body["top"].as_array().unwrap().len(), 1);
+    let ban = json!({ "reason": "trampas" });
+    let res = send(&app, "POST", &uri("ban"), Some(ban.clone()), Some(&admin)).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let res = send(&app, "GET", "/api/v1/auth/me", None, Some(&beto)).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({ "email": "beto@example.com", "password": "contraseña-segura" })),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (res.status, &res.body["code"]),
+        (StatusCode::FORBIDDEN, &json!("account_banned"))
+    );
+    let res = send(&app, "GET", weekly, None, None).await;
+    assert_eq!(res.body["top"], json!([]));
+    let admin_id = send(&app, "GET", "/api/v1/auth/me", None, Some(&admin))
+        .await
+        .body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = send(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/users/{admin_id}/ban"),
+        Some(ban),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(res.body["code"], "cannot_ban_admin");
+
+    // Se levanta la suspensión y vuelve a entrar.
+    let res = send(&app, "POST", &uri("unban"), None, Some(&admin)).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    login(&app, "beto@example.com").await;
+
+    // Descartar un reporte.
+    let res = send(
+        &app,
+        "POST",
+        "/api/v1/reports",
+        Some(report(&new_name, "other")),
+        Some(&ana),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED);
+    let id = send(&app, "GET", "/api/v1/admin/reports", None, Some(&admin))
+        .await
+        .body[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dismiss = format!("/api/v1/admin/reports/{id}/dismiss");
+    assert_eq!(
+        send(&app, "POST", &dismiss, None, Some(&admin))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&app, "POST", &dismiss, None, Some(&admin))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
     );
 }

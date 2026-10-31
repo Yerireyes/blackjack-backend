@@ -124,6 +124,21 @@ pub async fn start_session(
     user_id: Uuid,
     headers: &HeaderMap,
 ) -> Result<Cookie<'static>, ApiError> {
+    // Una cuenta suspendida no inicia sesión (ni con contraseña ni con Google).
+    let banned = sqlx::query_scalar!(
+        r#"SELECT banned_at IS NOT NULL AS "banned!" FROM users WHERE id = $1"#,
+        user_id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .unwrap_or(false);
+    if banned {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "account_banned",
+            "esta cuenta está suspendida",
+        ));
+    }
     let now = time::OffsetDateTime::now_utc();
     let expires = now + time::Duration::days(SESSION_DAYS);
     let session = SessionToken {
@@ -216,6 +231,7 @@ pub async fn current_session(
         r#"WITH s AS (
                SELECT id, last_seen_at FROM auth_sessions
                WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()
+                 AND NOT EXISTS (SELECT 1 FROM users WHERE id = $2 AND banned_at IS NOT NULL)
            ), seen AS (
                UPDATE auth_sessions SET last_seen_at = now()
                WHERE id IN (SELECT id FROM s WHERE last_seen_at < now() - interval '5 minutes')
@@ -249,5 +265,30 @@ impl FromRequestParts<AppState> for AuthUser {
             id: session.user_id,
             session_id: session.session_id,
         })
+    }
+}
+
+/// Un administrador: usuario con sesión cuyo email está en `ADMIN_EMAILS`. Si no, 403.
+#[derive(Debug, Clone, Copy)]
+pub struct AdminUser {
+    pub id: Uuid,
+}
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        let email = sqlx::query_scalar!("SELECT email FROM users WHERE id = $1", user.id)
+            .fetch_one(&state.pool)
+            .await?;
+        if !state.is_admin(&email) {
+            return Err(ApiError::new(
+                axum::http::StatusCode::FORBIDDEN,
+                "not_admin",
+                "solo para administradores",
+            ));
+        }
+        Ok(AdminUser { id: user.id })
     }
 }

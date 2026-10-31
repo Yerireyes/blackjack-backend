@@ -1,0 +1,50 @@
+# Producción en una máquina: PostgreSQL + API. El reverse proxy (Caddy o Nginx, ver el
+# README) corre en la máquina y conecta a 127.0.0.1:8080.
+#
+#   cp .env.example .env    # completar JWT_SECRET, POSTGRES_PASSWORD, FRONTEND_ORIGIN...
+#   docker compose up -d --build
+#
+# La API toma DATABASE_URL de aquí (apunta al servicio db), no del .env.
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blackjack
+      POSTGRES_DB: blackjack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD en .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blackjack"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://blackjack:${POSTGRES_PASSWORD}@db:5432/blackjack
+      # El proxy de la máquina llega a la API a través de la puerta de enlace de la red de
+      # docker (fija, ver abajo): es la IP cuyo X-Forwarded-For se acepta.
+      TRUSTED_PROXIES: 172.28.0.1
+    ports:
+      # Solo local: el reverse proxy publica el puerto 443.
+      - "127.0.0.1:8080:8080"
+    networks: [backend]
+    depends_on:
+      db:
+        condition: service_healthy
+
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
+
+volumes:
+  pgdata:

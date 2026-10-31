@@ -71,3 +71,16 @@ jobs:
         run: npm run check:contract
       - name: Prueba de humo del WASM
         run: npm run smoke:wasm
+
+  docker:
+    name: Imagen Docker de la API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir la imagen
+        run: docker build -t blackjack-api .
+      - name: El binario arranca (falla por falta de configuración, no por la imagen)
+        run: |
+          out=$(docker run --rm blackjack-api 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "falta la variable de entorno"

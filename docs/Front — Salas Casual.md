@@ -1,6 +1,15 @@
 # Front — Salas Casual (multijugador)
 
-**Versión del 2026-10-30 (primera).** Qué cambió respecto de lo que el front conoce:
+**Versión del 2026-10-31 (revisión 2).** Cambios respecto de la primera versión:
+
+- **Seguro** en las salas (ver «Front — Seguro.md»): `{ type: "insurance", take }`.
+- **Torneos:** salas de torneo con `CreateRoomRequest.tournament: { hands }`, el mensaje
+  `{ type: "startTournament" }` y `RoomState.tournament` (sección 9).
+- `RoomPlayer.title`, y `RoomInfo.tournament`.
+- Errores nuevos: `tournament_running`, `tournament_no_rebuy`, `not_a_tournament` y
+  `not_enough_players`.
+
+Primera versión (2026-10-30). Qué cambió respecto de lo que el front conocía:
 
 - Nuevo modo **Salas**: mesas de 5 a 7 asientos contra el dealer, públicas o privadas, en
   tiempo real por **WebSocket**. Hasta 10 espectadores por sala.
@@ -133,6 +142,10 @@ Todos son JSON con `type`. Los tipos están en `ClientMessage` y `ServerMessage`
 | `rate_limited` | Ignorar (reacciones demasiado seguidas). |
 | `not_host` | — |
 | `round_voided` | «Se acabó el zapato: la ronda se anuló y nadie perdió nada.» |
+| `tournament_running` | «El torneo ya empezó: espera al siguiente.» |
+| `tournament_no_rebuy` | «En un torneo no se recompra.» |
+| `not_enough_players` | «Hacen falta al menos 2 jugadores sentados.» |
+| `not_a_tournament` | Error del front. |
 | `bad_request` | Error del front. |
 
 ### 7. Reconexión
@@ -152,6 +165,22 @@ Todos son JSON con `type`. Los tipos están en `ClientMessage` y `ServerMessage`
   personalizadas) y ayudas sí/no. Al crear, ir a la sala y mostrar el enlace para copiar.
 - **Mesa:** dealer arriba; asientos en arco; panel de apuesta en `betting`; botones de acción
   en mi turno con el temporizador; barra de reacciones; ranking y espectadores a un lado.
+
+### 9. Torneos
+
+- **Crear:** en «Crear sala», la opción «Torneo» con la cantidad de manos (5–30) manda
+  `tournament: { hands }`. El lobby lo muestra con `RoomInfo.tournament`.
+- **Antes de empezar:** sentarse no abre apuestas (`phase: "waiting"`,
+  `tournament.status: "waiting"`). El anfitrión ve «Iniciar torneo» →
+  `{ type: "startTournament" }` (hacen falta 2 o más sentados).
+- **En juego** (`status: "running"`): todos empiezan con 500 fichas de torneo
+  (`seats[i].stack`), sin recompras. Mostrar «Mano `played` de `hands`» y
+  `tournament.standings` (posición, pila y `out` para los eliminados) en lugar del
+  `leaderboard`, que en las salas de torneo viene vacío. Nadie más se puede sentar.
+- **Al terminar** (`status: "finished"`): la sala vuelve a `waiting`; mostrar el podio
+  con `tournament.winner` y la clasificación final. El ganador recibe el logro
+  `tournamentWin` (título «Campeón»): pedir `GET /me/achievements` y `GET /me/cosmetics`
+  si el ganador soy yo. El anfitrión puede iniciar otro.
 
 ---
 

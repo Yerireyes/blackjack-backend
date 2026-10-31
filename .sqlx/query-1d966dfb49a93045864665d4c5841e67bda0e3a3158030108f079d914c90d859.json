@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT friend_id FROM friends WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "friend_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "friends",
+            "name": "friend_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1d966dfb49a93045864665d4c5841e67bda0e3a3158030108f079d914c90d859"
+}
