@@ -1,5 +1,6 @@
-# Producción en una máquina: PostgreSQL + API. El reverse proxy (Caddy o Nginx, ver el
-# README) corre en la máquina y conecta a 127.0.0.1:8080.
+# Producción en una máquina: PostgreSQL + la imagen con front y API. Clonar los dos repos
+# lado a lado (blackjack-backend y blackjack-frontend). El reverse proxy (Caddy o Nginx, ver
+# el README) corre en la máquina, pone el HTTPS y reenvía todo a 127.0.0.1:8080.
 #
 #   cp .env.example .env    # completar JWT_SECRET, POSTGRES_PASSWORD, FRONTEND_ORIGIN...
 #   docker compose up -d --build
@@ -23,7 +24,10 @@ services:
       retries: 10
 
   api:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        frontend-src: ../blackjack-frontend
     restart: unless-stopped
     env_file: .env
     environment:

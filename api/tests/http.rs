@@ -36,7 +36,8 @@ fn config(analyze_burst: u32) -> Config {
         auth_burst: 1000,
         play_burst: 1000,
         max_rooms: 200,
-        trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+        trusted_proxies: vec!["127.0.0.1/32".parse().unwrap(), "::1/128".parse().unwrap()],
+        static_dir: None,
         google: None,
         daily_seed_secret: None,
         metrics_token: None,
@@ -2783,4 +2784,61 @@ async fn moderation(pool: PgPool) {
             .status,
         StatusCode::NOT_FOUND
     );
+}
+
+/// GET sin cuerpo: estado, Cache-Control y texto de la respuesta.
+async fn get_text(app: &Router, uri: &str) -> (StatusCode, Option<String>, String) {
+    let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let cache = res
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .map(|v| v.to_str().unwrap().to_string());
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, cache, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn serves_the_front_from_static_dir(pool: PgPool) {
+    let dir = std::env::temp_dir().join(format!("bj-web-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html><title>BJ</title>").unwrap();
+    std::fs::write(dir.join("assets/app-1a2b.js"), "console.log(1)").unwrap();
+    let mut cfg = config(10);
+    cfg.static_dir = Some(dir.clone());
+    let app = app_with(pool.clone(), &cfg);
+
+    let (status, cache, body) = get_text(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<title>BJ</title>"));
+    assert_eq!(cache.as_deref(), Some("no-cache"));
+    // Una pantalla de la SPA: también index.html.
+    let (status, _, body) = get_text(&app, "/salas/ABC123").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<title>BJ</title>"));
+    let (status, cache, body) = get_text(&app, "/assets/app-1a2b.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "console.log(1)");
+    assert_eq!(
+        cache.as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
+    // La API sigue respondiendo JSON, incluso en rutas que no existen.
+    let (status, _, body) = get_text(&app, "/api/v1/auth/providers").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("google"));
+    let (status, _, body) = get_text(&app, "/api/v1/no-existe").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("ruta no encontrada"), "{body}");
+
+    // Sin index.html no se sirve el front.
+    std::fs::remove_file(dir.join("index.html")).unwrap();
+    let app = app_with(pool, &cfg);
+    let (status, _, body) = get_text(&app, "/assets/app-1a2b.js").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("ruta no encontrada"), "{body}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -177,18 +177,23 @@ npm run db:migrate       # aplica migraciones con sqlx-cli
 npm run sqlx:prepare     # regenera .sqlx tras cambiar consultas SQL
 ```
 
+`target/` (compilaciones, no se versiona) crece con el tiempo: cada perfil (dev, test,
+release, wasm) y cada test de integración guarda su propia copia de las dependencias, y la
+compilación incremental acumula versiones viejas. `cargo clean` lo vacía; lo siguiente que
+se compile tarda más la primera vez.
+
 ### CI (GitHub Actions)
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre en cada PR y en cada push a
-`main`, en dos trabajos en paralelo:
+`main`, en tres trabajos en paralelo:
 
 - **Rust:** `cargo fmt --check`, `cargo clippy -D warnings` y `cargo test --workspace` contra
   un PostgreSQL 18 de servicio. Compila con `SQLX_OFFLINE=true`, así que una consulta nueva
   sin `npm run sqlx:prepare` hace fallar la CI.
 - **WASM y contrato:** `npm run build:wasm`, `npm run check:contract` (falla si
   `contract.ts` no coincide con Rust) y `npm run smoke:wasm`.
-
-- **Docker:** construye la imagen de la API y comprueba que el binario arranca.
+- **Docker:** construye la imagen (sin el front, que está en otro repo) y comprueba que el
+  binario arranca. La imagen completa la construye el workflow de despliegue (abajo).
 
 Para que un PR no se pueda fusionar con la CI en rojo: en GitHub, *Settings → Branches →
 Branch protection rules* para `main`, con «Require status checks to pass» y los tres
@@ -395,15 +400,67 @@ estrategia, con re-división real):
 
 ## Despliegue en producción
 
-Front y API van bajo el mismo dominio: un reverse proxy sirve el `dist/` del front en `/` y
-reenvía `/api` a la API, que escucha solo en local (`BIND_ADDR=127.0.0.1:8080`).
+Front y API van bajo el mismo origen: la cookie de sesión (`SameSite=Lax`), el WebSocket de
+las salas y la vuelta del login con Google funcionan sin CORS. La [imagen Docker](Dockerfile)
+lo resuelve sola: compila el motor WASM, el front y la API, y la API sirve el front
+(`STATIC_DIR=/srv/www`, con `index.html` para las rutas de la SPA y caché de un año para
+`/assets/`). Las migraciones van dentro del binario y se aplican al arrancar.
 
-### Con Docker (recomendado)
+```sh
+# Con el front (los dos repos lado a lado):
+docker build --build-context frontend-src=../blackjack-frontend -t blackjack .
+# Solo la API (lo que construye la CI):
+docker build -t blackjack .
+```
 
-[`docker-compose.yml`](docker-compose.yml) levanta PostgreSQL 18 y la API
-([`Dockerfile`](Dockerfile): compila con `.sqlx`, imagen `debian-slim` con solo el binario,
-usuario sin privilegios). La API publica `127.0.0.1:8080` y el reverse proxy de la máquina
-(abajo) la expone en HTTPS.
+**Por qué no Vercel ni Netlify:** ejecutan funciones serverless que viven lo que dura una
+petición. La API necesita un proceso que siga vivo: las salas y sus WebSocket están en
+memoria, y hay tareas periódicas (cierre de temporadas, limpieza). Además, el front no
+compila solo desde su repo, porque necesita el paquete WASM de este. Y separar front y API
+en dominios distintos rompería la cookie y el WebSocket.
+
+### En la nube: Render + Neon (gratis)
+
+- **Render** corre la imagen como servicio web gratuito. Tiene HTTPS y WebSocket.
+- **Neon** pone PostgreSQL gratis y sin vencimiento. El PostgreSQL gratuito de Render se
+  borra a los 30 días.
+
+1. **Base:** en [neon.tech](https://neon.tech), crear un proyecto en *AWS US East
+   (N. Virginia)*, la misma zona que Render. Copiar la cadena de conexión **directa** (sin
+   `-pooler`): `postgres://…neon.tech/neondb?sslmode=require`.
+2. **Imagen:** con cada push a `main`,
+   [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publica
+   `ghcr.io/<usuario>/blackjack` con el front de `blackjack-frontend` (rama `main`).
+   - Si el repo del front es privado: crear el secreto `FRONTEND_REPO_TOKEN`, un token
+     *fine-grained* con *Contents: read* sobre ese repo.
+   - Si el paquete de GHCR es privado, Render necesita una credencial para descargarlo (ver
+     [`render.yaml`](render.yaml)). Lo más simple es hacerlo público: *Packages → blackjack →
+     Package settings → Change visibility*.
+3. **Servicio:** en Render, *New → Blueprint* sobre este repo. Usa
+   [`render.yaml`](render.yaml), que genera `JWT_SECRET` y `DAILY_SEED_SECRET`. Pide:
+   - `DATABASE_URL`: la de Neon.
+   - `FRONTEND_ORIGIN`: `https://<servicio>.onrender.com`. Se conoce después de crear el
+     servicio; se puede completar entonces y redesplegar.
+   - `ADMIN_EMAILS`: tu email.
+4. **Despliegues automáticos:** copiar el *Deploy Hook* del servicio (*Settings*) al secreto
+   `RENDER_DEPLOY_HOOK` del repo. Desde entonces cada push a `main` construye y despliega.
+   Después de cambiar el front: *Actions → Despliegue → Run workflow*.
+5. **Google (opcional):** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` y
+   `GOOGLE_REDIRECT_URI=https://<servicio>.onrender.com/api/v1/auth/google/callback`.
+
+Límites del plan gratuito:
+- El servicio se duerme tras 15 minutos sin visitas, y la primera petición lo despierta en
+  menos de un minuto. Al dormirse se pierden las salas abiertas; las partidas guardadas no.
+- Tiene 0,1 vCPU y 512 MB, por eso `MAX_ROOMS=50`. Los análisis corren en el navegador (WASM).
+- Para que no se duerma: el plan *Starter* de Render (de pago), o la misma imagen en
+  cualquier plataforma de contenedores (Fly.io, Koyeb, Railway). En esas hay que ajustar
+  `TRUSTED_PROXIES` a la red de su proxy.
+
+### En una máquina propia, con Docker
+
+[`docker-compose.yml`](docker-compose.yml) levanta PostgreSQL 18 y la imagen. El compose
+espera los dos repos lado a lado (`../blackjack-frontend`). La imagen publica
+`127.0.0.1:8080`, y el reverse proxy de la máquina (abajo) la expone en HTTPS.
 
 ```sh
 cp .env.example .env      # JWT_SECRET, POSTGRES_PASSWORD, COOKIE_SECURE=true, FRONTEND_ORIGIN...
@@ -412,10 +469,13 @@ docker compose logs -f api
 ```
 
 - `DATABASE_URL` lo pone el compose (apunta al servicio `db`); el del `.env` no se usa.
-- La red de docker tiene la subred fija `172.28.0.0/24`: el proxy de la máquina llega a la
+- La red de docker tiene la subred fija `172.28.0.0/24`. El proxy de la máquina llega a la
   API desde `172.28.0.1`, que es el `TRUSTED_PROXIES` del compose.
-- Las migraciones van dentro del binario y se aplican al arrancar.
-- Sin Docker: `cargo build --release -p api` y un servicio de systemd con el `.env`.
+- Sin Docker:
+  - Compilar con `cargo build --release -p api`.
+  - Correrla como servicio de systemd con el `.env` y `STATIC_DIR` apuntando al `dist/` del
+    front.
+  - O dejar que el reverse proxy sirva el `dist/`.
 
 ### Respaldos
 
@@ -461,14 +521,7 @@ GOOGLE_REDIRECT_URI=https://<dominio>/api/v1/auth/google/callback
 
 ```caddyfile
 <dominio> {
-    handle /api/* {
-        reverse_proxy 127.0.0.1:8080
-    }
-    handle {
-        root * /srv/blackjack/dist
-        try_files {path} /index.html
-        file_server
-    }
+    reverse_proxy 127.0.0.1:8080
 }
 ```
 
@@ -480,7 +533,7 @@ server {
     server_name <dominio>;
     # ssl_certificate / ssl_certificate_key ...
 
-    location /api/ {
+    location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -491,11 +544,6 @@ server {
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 120s;
     }
-
-    location / {
-        root /srv/blackjack/dist;
-        try_files $uri /index.html;
-    }
 }
 ```
 
@@ -504,14 +552,10 @@ Para `$connection_upgrade`, en el bloque `http` de Nginx:
 WebSocket solo. El servidor manda un ping cada 30 s, así que `proxy_read_timeout` de 120 s
 alcanza.
 
-`/api/...` no lleva barra final en `proxy_pass`, así la ruta llega completa a la API. El
-`.wasm` del motor debe servirse con `Content-Type: application/wasm` (Caddy y Nginx ya lo
-hacen por defecto).
-
 **IP del cliente (límite de tasa).** Detrás del proxy, la conexión siempre viene de
 `127.0.0.1`. Por eso la API lee `X-Forwarded-For`, pero solo si la conexión viene de un proxy
-de confianza (`TRUSTED_PROXIES`: IPs separadas por comas; por defecto `127.0.0.1,::1`;
-vacía, no confía en nadie). Recorre la cabecera de derecha a izquierda y toma la primera IP
+de confianza (`TRUSTED_PROXIES`: IPs o redes CIDR separadas por comas; por defecto
+`127.0.0.1,::1`; vacía, no confía en nadie). Recorre la cabecera de derecha a izquierda y toma la primera IP
 que no sea un proxy de confianza: Caddy y Nginx agregan la IP real al final, y lo que esté a
 la izquierda lo pudo escribir el cliente. Si el proxy está en otra máquina (o en otro
 contenedor), agrega su IP a `TRUSTED_PROXIES`. La API nunca debe quedar expuesta
@@ -535,6 +579,8 @@ apagan para medir en frío, salvo `cached_next_decision_6d`.
 
 ## Pendiente
 
-- Resto de la fase 5: login con Facebook (necesita una app de Meta). La racha de decisiones
-  óptimas no cuenta Casual (sección 8.1).
-- Cuentas: recuperar, cambiar y crear contraseña, y borrar la cuenta.
+- Cuentas: cambiar y crear contraseña, y borrar la cuenta.
+- La racha de decisiones óptimas no cuenta Casual (sección 8.1 de la especificación).
+
+Fuera del proyecto (decisión del 2026-10-31): login con Facebook y recuperar la contraseña
+por email.

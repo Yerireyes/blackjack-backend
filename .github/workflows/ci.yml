@@ -73,7 +73,7 @@ jobs:
         run: npm run smoke:wasm
 
   docker:
-    name: Imagen Docker de la API
+    name: Imagen Docker (solo API)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

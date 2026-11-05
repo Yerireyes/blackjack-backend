@@ -31,6 +31,9 @@ codegen-units = 1
 # Los tests recorren recursiones grandes; optimizar también en dev/test.
 [profile.dev]
 opt-level = 1
+# Sin la información de depuración completa (variables, tipos) target/debug ocupa varias
+# veces menos; los backtraces siguen con archivo y línea.
+debug = "line-tables-only"
 
 [profile.test]
 opt-level = 3
